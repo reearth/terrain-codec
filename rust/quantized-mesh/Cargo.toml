@@ -1,0 +1,14 @@
+[package]
+name = "quantized-mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Encoder and decoder for Cesium quantized-mesh-1.0 terrain format"
+
+[dependencies]
+flate2.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[dev-dependencies]

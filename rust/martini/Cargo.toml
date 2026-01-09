@@ -1,0 +1,13 @@
+[package]
+name = "martini"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RTIN mesh generation for terrain data based on the Martini algorithm"
+
+[dependencies]
+
+[dev-dependencies]
+approx = "0.5"
+image = "0.25"
