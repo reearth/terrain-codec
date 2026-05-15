@@ -905,6 +905,7 @@ dependencies = [
 name = "terrain-codec"
 version = "0.1.0"
 dependencies = [
+ "image",
  "martini-rs",
  "quantized-mesh",
  "serde",

@@ -13,8 +13,17 @@ categories = ["graphics", "science::geo"]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = []
+# Enable `heightmap::container` (PNG / WebP wrappers via the `image` crate).
+image = ["dep:image"]
+
 [dependencies]
 martini-rs = { version = "0.1", path = "../martini" }
 quantized-mesh = { version = "0.1", path = "../quantized-mesh" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+image = { version = "0.25", optional = true, default-features = false, features = [
+    "png",
+    "webp",
+] }

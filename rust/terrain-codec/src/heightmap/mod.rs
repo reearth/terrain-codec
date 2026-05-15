@@ -1,5 +1,8 @@
 //! Heightmap RGB codecs for elevation tile formats.
 //!
+//! The [`container`] submodule (behind the `image` cargo feature) wraps
+//! the encoded RGB bytes in PNG or WebP for serving as image tiles.
+//!
 //! Three formats are supported, each as a `(encode_pixel, decode_pixel,
 //! encode, decode)` quadruplet:
 //!
@@ -36,6 +39,9 @@
 
 use std::fmt;
 use std::str::FromStr;
+
+#[cfg(feature = "image")]
+pub mod container;
 
 /// Identifies one of the supported RGB heightmap encodings, for
 /// runtime-dispatched encode/decode via the top-level functions

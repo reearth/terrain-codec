@@ -19,6 +19,8 @@ across tile boundaries.
 ```toml
 [dependencies]
 terrain-codec = "0.1"
+# Optional: PNG / WebP container helpers in heightmap::container
+terrain-codec = { version = "0.1", features = ["image"] }
 ```
 
 ## What's inside
@@ -68,8 +70,8 @@ tile formats:
   no-data sentinel).
 
 All operate on raw `(R, G, B)` byte triplets, so they're agnostic to
-the container — wrap the bytes in PNG/WebP yourself (e.g. via the
-`image` crate).
+the container. Enable the `image` cargo feature to wrap them in PNG /
+lossless WebP via [`heightmap::container`](https://docs.rs/terrain-codec/latest/terrain_codec/heightmap/container/).
 
 Each format exposes per-pixel and bulk APIs:
 
