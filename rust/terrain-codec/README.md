@@ -19,9 +19,19 @@ across tile boundaries.
 ```toml
 [dependencies]
 terrain-codec = "0.1"
-# Optional: PNG / WebP container helpers in heightmap::container
-terrain-codec = { version = "0.1", features = ["image"] }
+
+# Optional: enable one or more image-container encoders for
+# heightmap::container (each pulls in the `image` crate + its codec).
+terrain-codec = { version = "0.1", features = ["png", "webp", "avif"] }
 ```
+
+Feature flags:
+
+| Feature | Adds |
+|---------|------|
+| `png`   | `heightmap::container::rgb_to_png` + PNG decoding in `decode_image` |
+| `webp`  | `heightmap::container::rgb_to_webp` (lossless) + WebP decoding |
+| `avif`  | `heightmap::container::rgb_to_avif` (encode-only via ravif) |
 
 ## What's inside
 
@@ -70,8 +80,10 @@ tile formats:
   no-data sentinel).
 
 All operate on raw `(R, G, B)` byte triplets, so they're agnostic to
-the container. Enable the `image` cargo feature to wrap them in PNG /
-lossless WebP via [`heightmap::container`](https://docs.rs/terrain-codec/latest/terrain_codec/heightmap/container/).
+the container. Enable one or more of the `png`, `webp`, `avif` cargo
+features to wrap them via [`heightmap::container`](https://docs.rs/terrain-codec/latest/terrain_codec/heightmap/container/).
+A runtime-dispatched `rgb_to_container(ContainerFormat, …)` is also
+provided for when the format is picked dynamically.
 
 Each format exposes per-pixel and bulk APIs:
 

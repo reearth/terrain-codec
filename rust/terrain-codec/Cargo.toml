@@ -15,19 +15,18 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-# Enable `heightmap::container` (PNG / WebP wrappers via the `image` crate).
-image = ["dep:image"]
-# Add AVIF encoding to `heightmap::container` (implies `image`). Pulls in
-# the ravif encoder and dav1d decoder — heavier to compile and may need
-# a system C toolchain on some platforms.
-avif = ["image", "image/avif"]
+# Per-format container support in `heightmap::container`. Enable just
+# what you need — each pulls in the `image` crate plus its matching
+# codec.
+png = ["dep:image", "image/png"]
+webp = ["dep:image", "image/webp"]
+# AVIF encoder via the pure-Rust ravif backend. AVIF *decoding* needs
+# libdav1d (`image/avif-native`); opt in yourself if you need it.
+avif = ["dep:image", "image/avif"]
 
 [dependencies]
 martini-rs = { version = "0.1", path = "../martini" }
 quantized-mesh = { version = "0.1", path = "../quantized-mesh" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-image = { version = "0.25", optional = true, default-features = false, features = [
-    "png",
-    "webp",
-] }
+image = { version = "0.25", optional = true, default-features = false }

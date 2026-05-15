@@ -49,7 +49,7 @@ use std::fmt;
 use std::str::FromStr;
 
 pub mod cesium;
-#[cfg(feature = "image")]
+#[cfg(any(feature = "png", feature = "webp", feature = "avif"))]
 pub mod container;
 
 /// Identifies one of the supported RGB heightmap encodings, for
