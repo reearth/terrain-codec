@@ -1,4 +1,12 @@
-//! Heightmap RGB codecs for elevation tile formats.
+//! Heightmap codecs for elevation tile formats.
+//!
+//! Two flavours of heightmap encoding are supported:
+//!
+//! - **RGB tiles** (this module, top level): [`terrarium`], [`mapbox`],
+//!   [`gsi`]. Elevations packed into 3-byte `(R, G, B)` pixels, usually
+//!   served wrapped in a PNG or WebP container.
+//! - **Cesium heightmap-1.0** ([`cesium`]): 16-bit little-endian heights
+//!   plus child-tile mask. Cesium's legacy terrain format.
 //!
 //! The [`container`] submodule (behind the `image` cargo feature) wraps
 //! the encoded RGB bytes in PNG or WebP for serving as image tiles.
@@ -40,6 +48,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+pub mod cesium;
 #[cfg(feature = "image")]
 pub mod container;
 

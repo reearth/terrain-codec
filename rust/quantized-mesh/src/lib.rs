@@ -1,16 +1,15 @@
-//! Encoder and decoder for Cesium terrain tile formats.
+//! Encoder and decoder for Cesium quantized-mesh-1.0 terrain format.
 //!
-//! The primary format is **quantized-mesh-1.0** (3D triangulated mesh tiles
-//! used by CesiumJS for efficient 3D terrain streaming). The legacy
-//! **heightmap-1.0** format is also supported via the [`heightmap_1`]
-//! module.
+//! This crate provides encoding and decoding functionality for the
+//! quantized-mesh terrain format used by CesiumJS for efficient 3D
+//! terrain streaming.
+//!
+//! For the legacy heightmap-1.0 format see
+//! [`terrain_codec::heightmap::cesium`](https://docs.rs/terrain-codec/latest/terrain_codec/heightmap/cesium/).
 //!
 //! # References
 //!
-//! - quantized-mesh-1.0 specification:
-//!   <https://github.com/CesiumGS/quantized-mesh>
-//! - heightmap-1.0 specification:
-//!   <https://github.com/CesiumGS/cesium/wiki/heightmap-1.0>
+//! - Format specification: <https://github.com/CesiumGS/quantized-mesh>
 //!
 //! # Example
 //!
@@ -57,7 +56,6 @@ pub mod coords;
 mod decoding;
 mod encoding;
 mod header;
-pub mod heightmap_1;
 mod types;
 
 pub use decoding::*;
