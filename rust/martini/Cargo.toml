@@ -5,9 +5,16 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "RTIN mesh generation for terrain data based on the Martini algorithm"
+readme = "README.md"
+keywords = ["terrain", "mesh", "rtin", "martini", "heightmap"]
+categories = ["algorithms", "graphics", "science::geo"]
 
 [lib]
 name = "martini"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 

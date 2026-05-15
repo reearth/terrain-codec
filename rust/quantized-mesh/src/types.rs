@@ -153,10 +153,10 @@ impl WaterMask {
         }
 
         // Check if all values are the same
-        if let Some(&first) = data.first() {
-            if data[..256 * 256].iter().all(|&v| v == first) {
-                return Self::Uniform(first);
-            }
+        if let Some(&first) = data.first()
+            && data[..256 * 256].iter().all(|&v| v == first)
+        {
+            return Self::Uniform(first);
         }
 
         // Create grid

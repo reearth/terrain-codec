@@ -5,8 +5,8 @@ use std::io::{self, BufReader, Read};
 use flate2::read::GzDecoder;
 
 use crate::{
-    decode_high_water_mark, decode_zigzag_delta, EdgeIndices, QuantizedMeshHeader,
-    QuantizedVertices, TileMetadata, WaterMask,
+    EdgeIndices, QuantizedMeshHeader, QuantizedVertices, TileMetadata, WaterMask,
+    decode_high_water_mark, decode_zigzag_delta,
 };
 
 /// Error type for quantized-mesh decoding.
@@ -425,15 +425,15 @@ pub fn oct_decode_normal(encoded: [u8; 2]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{oct_encode_normal, EncodeOptions, QuantizedMeshEncoder};
+    use crate::{EncodeOptions, QuantizedMeshEncoder, oct_encode_normal};
 
     #[test]
     fn test_oct_decode_normal_roundtrip() {
         let test_normals = [
-            [0.0f32, 0.0, 1.0],   // Up
-            [0.0, 0.0, -1.0],     // Down
-            [1.0, 0.0, 0.0],      // Right
-            [0.0, 1.0, 0.0],      // Forward
+            [0.0f32, 0.0, 1.0],    // Up
+            [0.0, 0.0, -1.0],      // Down
+            [1.0, 0.0, 0.0],       // Right
+            [0.0, 1.0, 0.0],       // Forward
             [0.577, 0.577, 0.577], // Diagonal (roughly normalized)
         ];
 
@@ -467,8 +467,12 @@ mod tests {
         let edge_indices = EdgeIndices::from_vertices(&vertices);
 
         // Encode
-        let encoder =
-            QuantizedMeshEncoder::new(header.clone(), vertices.clone(), indices.clone(), edge_indices.clone());
+        let encoder = QuantizedMeshEncoder::new(
+            header,
+            vertices.clone(),
+            indices.clone(),
+            edge_indices.clone(),
+        );
         let encoded = encoder.encode_with_options(&EncodeOptions {
             compression_level: 0,
             ..Default::default()
@@ -503,8 +507,12 @@ mod tests {
         let edge_indices = EdgeIndices::from_vertices(&vertices);
 
         // Encode with compression
-        let encoder =
-            QuantizedMeshEncoder::new(header.clone(), vertices.clone(), indices.clone(), edge_indices.clone());
+        let encoder = QuantizedMeshEncoder::new(
+            header,
+            vertices.clone(),
+            indices.clone(),
+            edge_indices.clone(),
+        );
         let encoded = encoder.encode_with_options(&EncodeOptions {
             compression_level: 6,
             ..Default::default()
@@ -580,8 +588,12 @@ mod tests {
         let edge_indices = EdgeIndices::from_vertices(&vertices);
 
         // Encode
-        let encoder =
-            QuantizedMeshEncoder::new(header.clone(), vertices.clone(), indices.clone(), edge_indices.clone());
+        let encoder = QuantizedMeshEncoder::new(
+            header,
+            vertices.clone(),
+            indices.clone(),
+            edge_indices.clone(),
+        );
         let encoded = encoder.encode_with_options(&EncodeOptions {
             compression_level: 0,
             ..Default::default()
@@ -589,7 +601,8 @@ mod tests {
 
         // Decode from reader
         let reader = Cursor::new(encoded);
-        let decoded = QuantizedMeshDecoder::decode_from(reader).expect("Decoding from reader failed");
+        let decoded =
+            QuantizedMeshDecoder::decode_from(reader).expect("Decoding from reader failed");
 
         // Verify
         assert_eq!(decoded.vertices.u, vertices.u);
@@ -612,8 +625,12 @@ mod tests {
         let edge_indices = EdgeIndices::from_vertices(&vertices);
 
         // Encode with compression
-        let encoder =
-            QuantizedMeshEncoder::new(header.clone(), vertices.clone(), indices.clone(), edge_indices.clone());
+        let encoder = QuantizedMeshEncoder::new(
+            header,
+            vertices.clone(),
+            indices.clone(),
+            edge_indices.clone(),
+        );
         let encoded = encoder.encode_with_options(&EncodeOptions {
             compression_level: 6,
             ..Default::default()
@@ -621,7 +638,8 @@ mod tests {
 
         // Decode from reader
         let reader = Cursor::new(encoded);
-        let decoded = QuantizedMeshDecoder::decode_from(reader).expect("Decoding from reader failed");
+        let decoded =
+            QuantizedMeshDecoder::decode_from(reader).expect("Decoding from reader failed");
 
         // Verify
         assert_eq!(decoded.vertices.u, vertices.u);

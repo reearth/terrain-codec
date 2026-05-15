@@ -19,7 +19,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-quantized-mesh = { git = "https://github.com/reearth/terrain" }
+quantized-mesh = "0.1"
 ```
 
 ## Usage

@@ -1,4 +1,4 @@
-# terrain
+# terrain-codec
 
 Terrain processing libraries for 3D tile generation.
 

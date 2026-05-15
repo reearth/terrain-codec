@@ -2,8 +2,8 @@
 
 use std::io::{self, Write};
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 
 use crate::{
     EdgeIndices, ExtensionId, QuantizedMeshHeader, QuantizedVertices, TileMetadata, WaterMask,
@@ -271,10 +271,10 @@ impl QuantizedMeshEncoder {
         self.write_edge_indices_to(writer, &self.edge_indices.north, use_32bit)?;
 
         // Write extensions
-        if options.include_normals {
-            if let Some(normals) = &options.normals {
-                self.write_normals_extension_to(writer, normals)?;
-            }
+        if options.include_normals
+            && let Some(normals) = &options.normals
+        {
+            self.write_normals_extension_to(writer, normals)?;
         }
 
         if options.include_water_mask {
@@ -282,10 +282,10 @@ impl QuantizedMeshEncoder {
             self.write_water_mask_extension_to(writer, &water_mask)?;
         }
 
-        if options.include_metadata {
-            if let Some(metadata) = &options.metadata {
-                self.write_metadata_extension_to(writer, metadata)?;
-            }
+        if options.include_metadata
+            && let Some(metadata) = &options.metadata
+        {
+            self.write_metadata_extension_to(writer, metadata)?;
         }
 
         Ok(())
@@ -542,10 +542,13 @@ mod tests {
         // Encode to writer
         let mut data_writer = Vec::new();
         encoder
-            .encode_to_with_options(&mut data_writer, &EncodeOptions {
-                compression_level: 0,
-                ..Default::default()
-            })
+            .encode_to_with_options(
+                &mut data_writer,
+                &EncodeOptions {
+                    compression_level: 0,
+                    ..Default::default()
+                },
+            )
             .expect("Failed to encode to writer");
 
         // Both should produce the same output
@@ -568,10 +571,13 @@ mod tests {
         // Encode to writer with compression
         let mut data_writer = Vec::new();
         encoder
-            .encode_to_with_options(&mut data_writer, &EncodeOptions {
-                compression_level: 6,
-                ..Default::default()
-            })
+            .encode_to_with_options(
+                &mut data_writer,
+                &EncodeOptions {
+                    compression_level: 6,
+                    ..Default::default()
+                },
+            )
             .expect("Failed to encode to writer");
 
         // Should be gzip compressed

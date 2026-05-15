@@ -311,7 +311,11 @@ fn compute_occlusion_magnitude(position: &[f64; 3], direction: &[f64; 3]) -> Opt
     let mag_sq = (scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2]).max(1.0);
     let mag = mag_sq.sqrt();
     let inv_mag = 1.0 / mag;
-    let unit = [scaled[0] * inv_mag, scaled[1] * inv_mag, scaled[2] * inv_mag];
+    let unit = [
+        scaled[0] * inv_mag,
+        scaled[1] * inv_mag,
+        scaled[2] * inv_mag,
+    ];
 
     let cos_alpha = unit[0] * direction[0] + unit[1] * direction[1] + unit[2] * direction[2];
     // sin_alpha = |unit × direction|
@@ -434,7 +438,7 @@ mod tests {
             let lensq = vt_minus_p[0] * vt_minus_p[0]
                 + vt_minus_p[1] * vt_minus_p[1]
                 + vt_minus_p[2] * vt_minus_p[2];
-            !((vt_dot_vc * vt_dot_vc) / lensq >= dt2)
+            (vt_dot_vc * vt_dot_vc) / lensq < dt2
         };
         assert!(
             !visible,

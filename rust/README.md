@@ -1,13 +1,13 @@
-# terrain-rs
+# terrain-codec (Rust)
 
 Rust implementation of terrain processing libraries.
 
 ## Crates
 
-| Crate | Description |
-|-------|-------------|
-| [martini](./martini) | RTIN mesh generation from heightmaps |
-| [quantized-mesh](./quantized-mesh) | Cesium quantized-mesh-1.0 encoder/decoder |
+| crates.io name | Library name | Description |
+|----------------|--------------|-------------|
+| [`martini-rs`](./martini) | `martini` | RTIN mesh generation from heightmaps |
+| [`quantized-mesh`](./quantized-mesh) | `quantized_mesh` | Cesium quantized-mesh-1.0 encoder/decoder |
 
 ## Installation
 
@@ -15,8 +15,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-martini = { git = "https://github.com/reearth/terrain", subdirectory = "rust/martini" }
-quantized-mesh = { git = "https://github.com/reearth/terrain", subdirectory = "rust/quantized-mesh" }
+martini-rs = "0.1"
+quantized-mesh = "0.1"
 ```
 
 ## Quick Start

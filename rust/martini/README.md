@@ -17,8 +17,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-martini = { git = "https://github.com/reearth/terrain" }
+martini-rs = "0.1"
 ```
+
+> The crate is published on crates.io as `martini-rs` but imported as `martini`.
 
 ## Usage
 
