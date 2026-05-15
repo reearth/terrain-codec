@@ -1,5 +1,8 @@
 # terrain-codec
 
+[![Rust CI](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml/badge.svg)](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 Terrain processing libraries for 3D tile generation.
 
 ## Overview
@@ -24,35 +27,29 @@ This repository provides libraries for processing terrain data into formats suit
 
 ### martini
 
-RTIN (Right-Triangulated Irregular Network) mesh generation from heightmaps.
+[![Crates.io](https://img.shields.io/crates/v/martini-rs.svg)](https://crates.io/crates/martini-rs)
+[![Docs.rs](https://docs.rs/martini-rs/badge.svg)](https://docs.rs/martini-rs)
 
+RTIN (Right-Triangulated Irregular Network) mesh generation from heightmaps.
 Based on the [Martini algorithm](https://github.com/mapbox/martini) by Mapbox.
+
+- Source: [`rust/martini/`](./rust/martini)
+- Published on crates.io as `martini-rs` (imported as `martini`)
 
 ### quantized-mesh
 
+[![Crates.io](https://img.shields.io/crates/v/quantized-mesh.svg)](https://crates.io/crates/quantized-mesh)
+[![Docs.rs](https://docs.rs/quantized-mesh/badge.svg)](https://docs.rs/quantized-mesh)
+
 Encoder and decoder for [Cesium quantized-mesh-1.0](https://github.com/CesiumGS/quantized-mesh) terrain format.
+
+- Source: [`rust/quantized-mesh/`](./rust/quantized-mesh)
 
 ## Typical Workflow
 
-```
-Heightmap Data (GeoTIFF, PNG, etc.)
-         │
-         ▼
-    ┌─────────┐
-    │ martini │  Generate adaptive mesh from heightmap
-    └────┬────┘
-         │
-         ▼
-  Vertices, Indices, UVs
-         │
-         ▼
-┌────────────────┐
-│ quantized-mesh │  Encode to Cesium terrain format
-└───────┬────────┘
-        │
-        ▼
-   .terrain file (quantized-mesh-1.0)
-```
+1. **Load** a heightmap (GeoTIFF, PNG, etc.)
+2. **Mesh** it with `martini` → vertices, indices, UVs
+3. **Encode** with `quantized-mesh` → `.terrain` file (quantized-mesh-1.0)
 
 ## License
 

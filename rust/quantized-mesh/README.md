@@ -1,5 +1,10 @@
 # quantized-mesh
 
+[![Crates.io](https://img.shields.io/crates/v/quantized-mesh.svg)](https://crates.io/crates/quantized-mesh)
+[![Docs.rs](https://docs.rs/quantized-mesh/badge.svg)](https://docs.rs/quantized-mesh)
+[![Rust CI](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml/badge.svg)](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 Encoder and decoder for [Cesium quantized-mesh-1.0](https://github.com/CesiumGS/quantized-mesh) terrain format in Rust.
 
 ## Features

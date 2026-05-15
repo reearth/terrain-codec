@@ -1,5 +1,10 @@
 # martini
 
+[![Crates.io](https://img.shields.io/crates/v/martini-rs.svg)](https://crates.io/crates/martini-rs)
+[![Docs.rs](https://docs.rs/martini-rs/badge.svg)](https://docs.rs/martini-rs)
+[![Rust CI](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml/badge.svg)](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 RTIN (Right-Triangulated Irregular Network) mesh generation for terrain data in Rust.
 
 Based on the [Martini algorithm](https://github.com/mapbox/martini) by Mapbox.

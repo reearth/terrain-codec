@@ -1,5 +1,7 @@
 # terrain-codec (Rust)
 
+[![Rust CI](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml/badge.svg)](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml)
+
 Rust implementation of terrain processing libraries.
 
 ## Crates
