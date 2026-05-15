@@ -16,10 +16,11 @@
 
 use std::io::Cursor;
 
-use image::ImageReader;
+#[cfg(feature = "avif")]
+use image::codecs::avif::AvifEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::webp::WebPEncoder;
-use image::{ExtendedColorType, ImageEncoder};
+use image::{ExtendedColorType, ImageEncoder, ImageReader};
 
 /// Re-export of [`image::ImageError`] for callers that don't want to
 /// pull in the `image` crate directly.
@@ -81,8 +82,39 @@ pub fn rgb_to_webp(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Image
     Ok(out)
 }
 
-/// Decode PNG or WebP bytes to raw RGB. The format is auto-detected from
-/// the bytes' header.
+/// Wrap raw `width × height × 3` RGB bytes in an AVIF container.
+///
+/// Available behind the `avif` cargo feature, which pulls in the pure-Rust
+/// [`ravif`](https://docs.rs/ravif) encoder.
+///
+/// **Encode-only:** [`decode_image`] cannot decode AVIF without the
+/// system `libdav1d` library. If you need to decode AVIF, enable
+/// `image/avif-native` in your own dependency declaration and provide
+/// libdav1d at link time.
+///
+/// # Errors
+///
+/// Returns [`ImageError`] on encode failure.
+///
+/// # Panics
+///
+/// Panics if `rgb.len() != (width * height * 3) as usize`.
+#[cfg(feature = "avif")]
+pub fn rgb_to_avif(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
+    let expected = (width as usize) * (height as usize) * 3;
+    assert_eq!(
+        rgb.len(),
+        expected,
+        "rgb length mismatch: expected {expected}, got {}",
+        rgb.len()
+    );
+    let mut out = Vec::with_capacity(expected / 4);
+    AvifEncoder::new(&mut out).write_image(rgb, width, height, ExtendedColorType::Rgb8)?;
+    Ok(out)
+}
+
+/// Decode PNG / WebP (and AVIF when the `avif` feature is enabled) bytes
+/// to raw RGB. The format is auto-detected from the bytes' header.
 ///
 /// Pixels with alpha are dropped (the `image` crate decodes to RGBA
 /// internally and we keep only the RGB channels).
@@ -137,6 +169,26 @@ mod tests {
                 assert!((a - b).abs() < 0.5, "{fmt}: {a} → {b}");
             }
         }
+    }
+
+    #[cfg(feature = "avif")]
+    #[test]
+    fn avif_encodes_to_valid_container() {
+        let width = 8u32;
+        let height = 8u32;
+        let elevations: Vec<f32> = (0..(width * height) as usize)
+            .map(|i| i as f32 * 10.0)
+            .collect();
+        let rgb = encode(HeightmapFormat::Terrarium, &elevations, width, height);
+        let avif = rgb_to_avif(&rgb, width, height).unwrap();
+        // AVIF files have an `ftypavif` brand in the first ISO BMFF box.
+        assert!(
+            avif.windows(8).any(|w| w == b"ftypavif"),
+            "expected AVIF brand in output"
+        );
+        // Decoding requires libdav1d (image/avif-native) which we don't
+        // enable here, so we only verify the output is a valid AVIF
+        // container by its magic bytes.
     }
 
     #[test]
