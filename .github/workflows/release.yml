@@ -32,7 +32,12 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
+    # Configure Trusted Publishing on crates.io for each crate
+    # (https://crates.io/docs/trusted-publishing) — no long-lived
+    # CARGO_REGISTRY_TOKEN secret needed.
+    environment: crates-io
     permissions:
+      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -68,8 +73,13 @@ jobs:
       - name: cargo publish --dry-run
         run: cargo publish -p "${{ steps.target.outputs.crate }}" --dry-run
 
+      - name: Authenticate to crates.io (Trusted Publishing / OIDC)
+        if: steps.target.outputs.dry_run != 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: cargo publish
         if: steps.target.outputs.dry_run != 'true'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p "${{ steps.target.outputs.crate }}"
