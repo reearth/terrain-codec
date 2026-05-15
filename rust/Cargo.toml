@@ -4,9 +4,9 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/reearth/terrain"
+repository = "https://github.com/reearth/terrain-codec"
 
 [workspace.dependencies]
 flate2 = "1"

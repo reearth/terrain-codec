@@ -473,7 +473,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "martini"
+name = "martini-rs"
 version = "0.1.0"
 dependencies = [
  "approx",
