@@ -5,10 +5,11 @@
 //! - [`face_normals`] — accumulates triangle normals onto vertices.
 //!   Simple but produces a **visible seam at tile boundaries** because
 //!   each tile only sees its own triangles.
-//! - [`halo_gradient_normals`] — samples a halo-extended DEM grid that
-//!   covers cells **beyond** the tile on every side. Adjacent tiles read
-//!   the same samples at any shared physical position, so seam vertices
-//!   get identical normals on both sides and lighting is continuous.
+//! - [`buffered_gradient_normals`] — samples a buffer-extended DEM grid
+//!   that covers cells **beyond** the tile on every side. Adjacent tiles
+//!   read the same samples at any shared physical position, so seam
+//!   vertices get identical normals on both sides and lighting is
+//!   continuous.
 //!
 //! Both functions return ECEF normals (Cesium's convention for
 //! oct-encoded normals stored in quantized-mesh tiles).
@@ -16,59 +17,62 @@
 use quantized_mesh::coords::{WGS84_SEMI_MAJOR_AXIS, geodetic_to_ecef};
 use quantized_mesh::{QUANTIZED_MAX, QuantizedVertices, TileBounds};
 
-/// Elevations sampled on a grid that extends `halo` cells *beyond* the tile
-/// on each side.
+/// Elevations sampled on a grid that extends `buffer` cells *beyond* the
+/// tile on each side.
 ///
-/// Used by [`halo_gradient_normals`] so that adjacent tiles read the same
-/// DEM samples at any shared physical position.
+/// Used by [`buffered_gradient_normals`] so that adjacent tiles read the
+/// same DEM samples at any shared physical position. This is the same
+/// idea as a raster "buffer" or image "padding": a strip of neighbour
+/// data around the tile that lets edge vertices compute the same
+/// gradient that the neighbour tile would compute.
 ///
 /// # Layout
 ///
-/// Row-major, north → south, `(tile_grid_size + 2*halo)` samples per side.
-/// The inner `tile_grid_size × tile_grid_size` block corresponds to the
-/// tile itself; the surrounding strip of width `halo` cells is sampled
-/// from the **neighbour** tiles' DEM (or any DEM source covering that
-/// physical area), so vertices on the absolute tile edge can still read
-/// their `±1` neighbours via the halo cells.
+/// Row-major, north → south, `(tile_grid_size + 2*buffer)` samples per
+/// side. The inner `tile_grid_size × tile_grid_size` block corresponds
+/// to the tile itself; the surrounding strip of width `buffer` cells is
+/// sampled from the **neighbour** tiles' DEM (or any DEM source covering
+/// that physical area), so vertices on the absolute tile edge can still
+/// read their `±1` neighbours via the buffer cells.
 #[derive(Debug, Clone)]
-pub struct HaloElevations {
-    /// Elevation samples (`(tile_grid_size + 2*halo)²` entries, row-major
-    /// north → south, NaN allowed for missing data).
+pub struct BufferedElevations {
+    /// Elevation samples (`(tile_grid_size + 2*buffer)²` entries,
+    /// row-major north → south, NaN allowed for missing data).
     pub elevations: Vec<f64>,
-    /// Number of halo cells on each side.
-    pub halo: u32,
+    /// Number of buffer cells on each side.
+    pub buffer: u32,
     /// Tile grid size (e.g. 65 for a Cesium-style 64-cell tile).
-    /// The full halo grid is `(tile_grid_size + 2*halo)` per side.
+    /// The full buffered grid is `(tile_grid_size + 2*buffer)` per side.
     pub tile_grid_size: u32,
 }
 
-impl HaloElevations {
-    /// Create a halo-extended elevation grid.
+impl BufferedElevations {
+    /// Create a buffer-extended elevation grid.
     ///
     /// # Panics
     ///
     /// Panics if `elevations.len()` does not equal
-    /// `(tile_grid_size + 2*halo)²`.
-    pub fn new(elevations: Vec<f64>, tile_grid_size: u32, halo: u32) -> Self {
-        let side = (tile_grid_size + 2 * halo) as usize;
+    /// `(tile_grid_size + 2*buffer)²`.
+    pub fn new(elevations: Vec<f64>, tile_grid_size: u32, buffer: u32) -> Self {
+        let side = (tile_grid_size + 2 * buffer) as usize;
         assert_eq!(
             elevations.len(),
             side * side,
-            "halo grid must have {side}×{side} = {} samples, got {}",
+            "buffered grid must have {side}×{side} = {} samples, got {}",
             side * side,
             elevations.len()
         );
         Self {
             elevations,
-            halo,
+            buffer,
             tile_grid_size,
         }
     }
 
-    /// Width/height of the full halo-extended grid in samples.
+    /// Width/height of the full buffer-extended grid in samples.
     #[inline]
-    pub fn halo_grid_size(&self) -> u32 {
-        self.tile_grid_size + 2 * self.halo
+    pub fn buffered_grid_size(&self) -> u32 {
+        self.tile_grid_size + 2 * self.buffer
     }
 }
 
@@ -84,7 +88,7 @@ impl HaloElevations {
 /// **Note:** this only looks at triangles inside the current tile, so
 /// vertices on the tile edge get a normal that doesn't match the
 /// neighbour tile's view of the same physical edge. Use
-/// [`halo_gradient_normals`] when seam-free shading matters.
+/// [`buffered_gradient_normals`] when seam-free shading matters.
 pub fn face_normals(
     vertices: &QuantizedVertices,
     indices: &[u32],
@@ -158,7 +162,7 @@ pub fn face_normals(
     normals
 }
 
-/// Compute vertex normals from the DEM gradient on a halo-extended grid.
+/// Compute vertex normals from the DEM gradient on a buffer-extended grid.
 ///
 /// For every vertex the local east/north slope is read from the same DEM
 /// samples that the neighbour tile would read — so the same physical edge
@@ -167,27 +171,28 @@ pub fn face_normals(
 ///
 /// # Pipeline
 ///
-/// 1. Map the vertex's `(u, v)` into the halo grid's index space.
-/// 2. Sample the halo grid bilinearly at a half-cell stencil to get the
-///    central differences `∂h/∂x` and `∂h/∂y` (metres per metre).
+/// 1. Map the vertex's `(u, v)` into the buffered grid's index space.
+/// 2. Sample the buffered grid bilinearly at a half-cell stencil to get
+///    the central differences `∂h/∂x` and `∂h/∂y` (metres per metre).
 /// 3. Build a local ENU normal `(-∂h/∂x, -∂h/∂y, 1)` and rotate it into
 ///    ECEF, which is what Cesium expects for oct-encoded normals.
 ///
 /// The returned vectors are unit-length ECEF normals.
-pub fn halo_gradient_normals(
+pub fn buffered_gradient_normals(
     vertices: &QuantizedVertices,
     bounds: &TileBounds,
-    halo: &HaloElevations,
+    buffered: &BufferedElevations,
 ) -> Vec<[f32; 3]> {
     let vertex_count = vertices.len();
-    let halo_cells = halo.halo as usize;
-    let grid_size = halo.tile_grid_size as usize;
-    let halo_grid_size = grid_size + 2 * halo_cells;
+    let buffer_cells = buffered.buffer as usize;
+    let grid_size = buffered.tile_grid_size as usize;
+    let full_grid_size = grid_size + 2 * buffer_cells;
 
     let tile_lon_span = bounds.east - bounds.west;
     let tile_lat_span = bounds.north - bounds.south;
-    // Cells = (grid_size - 1) inside the tile; halo adds `halo_cells` cells
-    // on each side, so the per-cell step in degrees is unchanged.
+    // Cells = (grid_size - 1) inside the tile; the buffer adds
+    // `buffer_cells` cells on each side, so the per-cell step in degrees
+    // is unchanged.
     let cell_lon_deg = tile_lon_span / (grid_size as f64 - 1.0);
     let cell_lat_deg = tile_lat_span / (grid_size as f64 - 1.0);
 
@@ -200,21 +205,21 @@ pub fn halo_gradient_normals(
     let cell_m_y = cell_lat_deg * m_per_deg_lat;
 
     let height_at = |fx: f64, fy: f64| -> f64 {
-        // Clamp to the halo grid so vertices on the absolute tile edge can
-        // still read their +/-1 neighbours via the halo cells.
-        let max_idx = (halo_grid_size - 1) as f64;
+        // Clamp to the buffered grid so vertices on the absolute tile edge
+        // can still read their +/-1 neighbours via the buffer cells.
+        let max_idx = (full_grid_size - 1) as f64;
         let fx = fx.clamp(0.0, max_idx);
         let fy = fy.clamp(0.0, max_idx);
         let x0 = fx.floor() as usize;
         let y0 = fy.floor() as usize;
-        let x1 = (x0 + 1).min(halo_grid_size - 1);
-        let y1 = (y0 + 1).min(halo_grid_size - 1);
+        let x1 = (x0 + 1).min(full_grid_size - 1);
+        let y1 = (y0 + 1).min(full_grid_size - 1);
         let tx = fx - x0 as f64;
         let ty = fy - y0 as f64;
-        let h00 = halo.elevations[y0 * halo_grid_size + x0];
-        let h10 = halo.elevations[y0 * halo_grid_size + x1];
-        let h01 = halo.elevations[y1 * halo_grid_size + x0];
-        let h11 = halo.elevations[y1 * halo_grid_size + x1];
+        let h00 = buffered.elevations[y0 * full_grid_size + x0];
+        let h10 = buffered.elevations[y0 * full_grid_size + x1];
+        let h01 = buffered.elevations[y1 * full_grid_size + x0];
+        let h11 = buffered.elevations[y1 * full_grid_size + x1];
         // NaN-tolerant bilinear: fall back to any defined corner.
         let bilerp = |a: f64, b: f64, t: f64| -> f64 {
             if a.is_nan() {
@@ -238,13 +243,13 @@ pub fn halo_gradient_normals(
         let lon = bounds.west + u_norm * tile_lon_span;
         let lat = bounds.south + v_norm * tile_lat_span;
 
-        // Index space in the halo grid:
-        //   u_norm = 0 (tile west) ↔ halo x index `halo_cells`
-        //   u_norm = 1 (tile east) ↔ halo x index `halo_cells + grid_size - 1`
+        // Index space in the buffered grid:
+        //   u_norm = 0 (tile west) ↔ buffered x index `buffer_cells`
+        //   u_norm = 1 (tile east) ↔ buffered x index `buffer_cells + grid_size - 1`
         // Row index increases SOUTHWARD (north→south layout), so v_norm = 1
-        // (tile north) maps to halo y index `halo_cells`.
-        let fx_center = halo_cells as f64 + u_norm * (grid_size as f64 - 1.0);
-        let fy_center = halo_cells as f64 + (1.0 - v_norm) * (grid_size as f64 - 1.0);
+        // (tile north) maps to buffered y index `buffer_cells`.
+        let fx_center = buffer_cells as f64 + u_norm * (grid_size as f64 - 1.0);
+        let fy_center = buffer_cells as f64 + (1.0 - v_norm) * (grid_size as f64 - 1.0);
 
         // Central differences with a half-cell step. Bilinear interpolation
         // is exact at integer offsets, so the effective stencil width is
@@ -298,13 +303,13 @@ mod tests {
     use super::*;
 
     /// A perfectly tilted plane h(x, y) = a*x + b*y has a constant ENU
-    /// normal everywhere. The halo-gradient path should reproduce that
+    /// normal everywhere. The buffered-gradient path should reproduce that
     /// analytical normal (within float tolerance) for every vertex.
     #[test]
-    fn halo_gradient_matches_analytical_plane() {
+    fn buffered_gradient_matches_analytical_plane() {
         let grid_size = 65usize;
-        let halo = 1usize;
-        let halo_grid_size = grid_size + 2 * halo;
+        let buffer = 1usize;
+        let full_grid_size = grid_size + 2 * buffer;
 
         // ~1 km square near Tokyo so ENU→ECEF rotation does real work.
         let bounds = TileBounds::new(139.0, 35.0, 139.01, 35.01);
@@ -321,14 +326,14 @@ mod tests {
         let dh_dx = 5.0 / cell_m_x;
         let dh_dy = 3.0 / cell_m_y;
 
-        // Build a plane on the halo grid. Row 0 is north → larger j means
+        // Build a plane on the buffered grid. Row 0 is north → larger j means
         // smaller y in ENU, so reverse j when computing y.
-        let mut halo_grid = Vec::with_capacity(halo_grid_size * halo_grid_size);
-        for j in 0..halo_grid_size {
-            for i in 0..halo_grid_size {
-                let x = (i as f64 - halo as f64) * cell_m_x;
-                let y = ((halo_grid_size - 1 - j) as f64 - halo as f64) * cell_m_y;
-                halo_grid.push(dh_dx * x + dh_dy * y + 100.0);
+        let mut buffered_grid = Vec::with_capacity(full_grid_size * full_grid_size);
+        for j in 0..full_grid_size {
+            for i in 0..full_grid_size {
+                let x = (i as f64 - buffer as f64) * cell_m_x;
+                let y = ((full_grid_size - 1 - j) as f64 - buffer as f64) * cell_m_y;
+                buffered_grid.push(dh_dx * x + dh_dy * y + 100.0);
             }
         }
 
@@ -340,8 +345,8 @@ mod tests {
             }
         }
 
-        let halo_elev = HaloElevations::new(halo_grid, grid_size as u32, halo as u32);
-        let normals = halo_gradient_normals(&vertices, &bounds, &halo_elev);
+        let buffered_elev = BufferedElevations::new(buffered_grid, grid_size as u32, buffer as u32);
+        let normals = buffered_gradient_normals(&vertices, &bounds, &buffered_elev);
 
         // Expected ENU normal of the plane (constant).
         let n_enu = {
@@ -375,39 +380,41 @@ mod tests {
         }
     }
 
-    /// Two adjacent tiles sharing an east/west edge: with halo-gradient
+    /// Two adjacent tiles sharing an east/west edge: with buffered-gradient
     /// normals, the seam vertices should get bit-identical normals because
-    /// they read the same DEM samples from the shared halo strip.
+    /// they read the same DEM samples from the shared buffer strip.
     #[test]
-    fn halo_gradient_normals_match_across_tile_seam() {
+    fn buffered_gradient_normals_match_across_tile_seam() {
         let grid_size = 65usize;
-        let halo = 1usize;
-        let halo_grid_size = grid_size + 2 * halo;
+        let buffer = 1usize;
+        let full_grid_size = grid_size + 2 * buffer;
 
         let bounds_west = TileBounds::new(139.00, 35.0, 139.01, 35.01);
         let bounds_east = TileBounds::new(139.01, 35.0, 139.02, 35.01);
 
-        // A simple ridge — both tiles' halos read the same analytic field
+        // A simple ridge — both tiles' buffers read the same analytic field
         // at the seam, so seam normals must match.
         let height_field =
             |lon: f64, lat: f64| -> f64 { (lon * 100.0).sin() * 50.0 + (lat * 80.0).cos() * 30.0 };
         let cell_lon = (bounds_west.east - bounds_west.west) / (grid_size as f64 - 1.0);
         let cell_lat = (bounds_west.north - bounds_west.south) / (grid_size as f64 - 1.0);
 
-        let make_halo = |b: &TileBounds| -> Vec<f64> {
-            let mut out = Vec::with_capacity(halo_grid_size * halo_grid_size);
-            for j in 0..halo_grid_size {
-                let lat = b.north + cell_lat * halo as f64 - (j as f64) * cell_lat;
-                for i in 0..halo_grid_size {
-                    let lon = b.west - cell_lon * halo as f64 + (i as f64) * cell_lon;
+        let make_buffered = |b: &TileBounds| -> Vec<f64> {
+            let mut out = Vec::with_capacity(full_grid_size * full_grid_size);
+            for j in 0..full_grid_size {
+                let lat = b.north + cell_lat * buffer as f64 - (j as f64) * cell_lat;
+                for i in 0..full_grid_size {
+                    let lon = b.west - cell_lon * buffer as f64 + (i as f64) * cell_lon;
                     out.push(height_field(lon, lat));
                 }
             }
             out
         };
 
-        let halo_w = HaloElevations::new(make_halo(&bounds_west), grid_size as u32, halo as u32);
-        let halo_e = HaloElevations::new(make_halo(&bounds_east), grid_size as u32, halo as u32);
+        let buf_w =
+            BufferedElevations::new(make_buffered(&bounds_west), grid_size as u32, buffer as u32);
+        let buf_e =
+            BufferedElevations::new(make_buffered(&bounds_east), grid_size as u32, buffer as u32);
 
         let mut v_west = QuantizedVertices::with_capacity(3);
         let mut v_east = QuantizedVertices::with_capacity(3);
@@ -416,8 +423,8 @@ mod tests {
             v_east.push(0, v_q, 0);
         }
 
-        let n_west = halo_gradient_normals(&v_west, &bounds_west, &halo_w);
-        let n_east = halo_gradient_normals(&v_east, &bounds_east, &halo_e);
+        let n_west = buffered_gradient_normals(&v_west, &bounds_west, &buf_w);
+        let n_east = buffered_gradient_normals(&v_east, &bounds_east, &buf_e);
 
         for (i, (a, b)) in n_west.iter().zip(n_east.iter()).enumerate() {
             let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) as f64;

@@ -11,7 +11,7 @@ Ties together [`martini-rs`](https://crates.io/crates/martini-rs) (RTIN
 mesh generation) and [`quantized-mesh`](https://crates.io/crates/quantized-mesh)
 (Cesium quantized-mesh-1.0 encode/decode), and adds higher-level utilities
 that don't fit cleanly in either — most notably **seamless vertex normals
-computed from a halo-extended DEM grid**, which keeps shading continuous
+computed from a buffer-extended DEM grid**, which keeps shading continuous
 across tile boundaries.
 
 ## Installation
@@ -40,30 +40,59 @@ convention for oct-encoded normals):
 - **`face_normals`** — accumulate triangle face normals onto vertices.
   Simple, but produces a **visible seam at tile boundaries** because each
   tile only sees its own triangles.
-- **`halo_gradient_normals`** — sample a halo-extended DEM grid that
-  covers cells *beyond* the tile on every side. Adjacent tiles read the
-  same samples at any shared physical position, so seam vertices get
+- **`buffered_gradient_normals`** — sample a buffer-extended DEM grid
+  that covers cells *beyond* the tile on every side. Adjacent tiles read
+  the same samples at any shared physical position, so seam vertices get
   identical normals on both sides and lighting is continuous.
 
 ```rust
-use terrain_codec::normals::{HaloElevations, halo_gradient_normals};
+use terrain_codec::normals::{BufferedElevations, buffered_gradient_normals};
 
-let halo = HaloElevations::new(
-    elevations_with_halo, // size: (tile_grid_size + 2*halo)²
+let buffered = BufferedElevations::new(
+    elevations_with_buffer, // size: (tile_grid_size + 2*buffer)²
     tile_grid_size,
-    halo_cells,
+    buffer_cells,
 );
 
-let normals = halo_gradient_normals(&vertices, &bounds, &halo);
+let normals = buffered_gradient_normals(&vertices, &bounds, &buffered);
 ```
 
-## Why halo normals?
+### `heightmap` — RGB tile codecs
+
+Symmetric `encode`/`decode` pairs for the three common RGB elevation
+tile formats:
+
+- **`heightmap::terrarium`** — Mapzen / Tilezen / Stadia Terrarium.
+- **`heightmap::mapbox`** — Mapbox Terrain-RGB.
+- **`heightmap::gsi`** — GSI 地理院標高タイル (signed 24-bit, with NaN
+  no-data sentinel).
+
+All operate on raw `(R, G, B)` byte triplets, so they're agnostic to
+the container — wrap the bytes in PNG/WebP yourself (e.g. via the
+`image` crate).
+
+Each format exposes per-pixel and bulk APIs:
+
+```rust
+use terrain_codec::heightmap::{terrarium, mapbox, gsi};
+
+// Per-pixel (for streaming, hot loops, tests)
+let rgb_px: [u8; 3] = terrarium::encode_pixel(123.45);
+let h: f32 = terrarium::decode_pixel([0x80, 0x00, 0x00]); // 0.0
+
+// Bulk (row-major width × height buffer)
+let rgb = terrarium::encode(&elevations, width, height);
+let decoded = terrarium::decode(&rgb, width, height);
+```
+
+## Why buffered normals?
 
 Face-normal accumulation only sees triangles inside the current tile, so
 the **same physical edge is shaded inconsistently from adjacent tiles**.
-Gradient normals computed from a halo-extended DEM grid use the same
+Gradient normals computed from a buffer-extended DEM grid use the same
 samples both tiles can see, so edge vertices get identical normals on
-both sides.
+both sides. This is the same trick raster pipelines use under names like
+"padding" or "buffer cells".
 
 The crate ships regression tests that:
 

@@ -17,10 +17,16 @@
 //!
 //! # Normals
 //!
-//! See [`normals`] for the seam-free halo-gradient normal algorithm and a
-//! simpler per-tile face-normal accumulator.
+//! See [`normals`] for the seam-free buffered-gradient normal algorithm
+//! and a simpler per-tile face-normal accumulator.
+//!
+//! # Heightmap codecs
+//!
+//! See [`heightmap`] for Terrarium / Mapbox Terrain-RGB / GSI 地理院標高タイル
+//! `encode` ⇄ `decode` pairs.
 
 pub use martini;
 pub use quantized_mesh;
 
+pub mod heightmap;
 pub mod normals;

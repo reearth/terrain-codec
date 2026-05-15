@@ -50,9 +50,9 @@ Encoder and decoder for [Cesium quantized-mesh-1.0](https://github.com/CesiumGS/
 [![Crates.io](https://img.shields.io/crates/v/terrain-codec.svg)](https://crates.io/crates/terrain-codec)
 [![Docs.rs](https://docs.rs/terrain-codec/badge.svg)](https://docs.rs/terrain-codec)
 
-Higher-level utilities — re-exports `martini` + `quantized_mesh` and adds
+Higher-level utilities — re-exports `martini` + `quantized_mesh`, plus
 seamless DEM-gradient vertex normals (eliminates tile-boundary shading
-seams).
+seams) and RGB heightmap codecs (Terrarium / Mapbox Terrain-RGB / GSI).
 
 - Source: [`rust/terrain-codec/`](./rust/terrain-codec)
 
