@@ -902,6 +902,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrain-codec"
+version = "0.1.0"
+dependencies = [
+ "martini-rs",
+ "quantized-mesh",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"

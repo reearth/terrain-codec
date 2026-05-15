@@ -3,9 +3,10 @@ name: Release (crates.io)
 on:
   push:
     tags:
-      # martini-rs-v0.1.0, quantized-mesh-v0.1.0, ...
+      # martini-rs-v0.1.0, quantized-mesh-v0.1.0, terrain-codec-v0.1.0, ...
       - "martini-rs-v*"
       - "quantized-mesh-v*"
+      - "terrain-codec-v*"
   workflow_dispatch:
     inputs:
       crate:
@@ -15,6 +16,7 @@ on:
         options:
           - martini-rs
           - quantized-mesh
+          - terrain-codec
       dry_run:
         description: "Dry run (do not actually publish)"
         required: false
@@ -65,6 +67,7 @@ jobs:
           case "$CRATE" in
             martini-rs)     DIR="martini" ;;
             quantized-mesh) DIR="quantized-mesh" ;;
+            terrain-codec)  DIR="terrain-codec" ;;
             *) echo "::error::Unknown crate: $CRATE"; exit 1 ;;
           esac
           echo "crate=$CRATE"     >> "$GITHUB_OUTPUT"

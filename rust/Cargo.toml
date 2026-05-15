@@ -1,5 +1,5 @@
 [workspace]
-members = ["martini", "quantized-mesh"]
+members = ["martini", "quantized-mesh", "terrain-codec"]
 resolver = "2"
 
 [workspace.package]

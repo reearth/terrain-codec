@@ -10,6 +10,7 @@ Rust implementation of terrain processing libraries.
 |----------------|--------------|-------------|
 | [`martini-rs`](./martini) | `martini` | RTIN mesh generation from heightmaps |
 | [`quantized-mesh`](./quantized-mesh) | `quantized_mesh` | Cesium quantized-mesh-1.0 encoder/decoder |
+| [`terrain-codec`](./terrain-codec) | `terrain_codec` | Higher-level utilities (seamless halo normals) + re-exports of the two crates above |
 
 ## Installation
 
@@ -17,8 +18,10 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-martini-rs = "0.1"
-quantized-mesh = "0.1"
+# Pick what you need:
+martini-rs = "0.1"      # mesh generation only
+quantized-mesh = "0.1"  # format only
+terrain-codec = "0.1"   # both, plus halo normals
 ```
 
 ## Quick Start

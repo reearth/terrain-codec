@@ -1,0 +1,18 @@
+[package]
+name = "terrain-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terrain processing utilities for 3D tile generation: seamless DEM-gradient normals, mesh helpers, and re-exports of martini-rs + quantized-mesh"
+readme = "README.md"
+keywords = ["terrain", "cesium", "quantized-mesh", "normals", "3d-tiles"]
+categories = ["graphics", "science::geo"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+martini-rs = { version = "0.1", path = "../martini" }
+quantized-mesh = { version = "0.1", path = "../quantized-mesh" }
