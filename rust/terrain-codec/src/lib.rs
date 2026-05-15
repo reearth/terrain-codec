@@ -29,4 +29,6 @@ pub use martini;
 pub use quantized_mesh;
 
 pub mod heightmap;
+pub mod layer_json;
 pub mod normals;
+pub mod tile_coords;
