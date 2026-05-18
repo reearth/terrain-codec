@@ -42,22 +42,39 @@ impl QuantizedMeshHeader {
     /// Create a header from tile bounds and height range.
     ///
     /// Computes ECEF coordinates, bounding sphere, and horizon occlusion point.
-    /// Falls back to corner+edge sample points for the horizon occlusion — callers
-    /// that have the actual mesh vertices should prefer `from_bounds_with_vertices`
+    /// Falls back to corner+edge sample points for the horizon occlusion —
+    /// callers that have the actual mesh vertices should prefer
+    /// [`from_bounds_with_vertices_iter`](Self::from_bounds_with_vertices_iter)
     /// for tighter occlusion.
     pub fn from_bounds(bounds: &TileBounds, min_height: f32, max_height: f32) -> Self {
-        Self::from_bounds_with_vertices(bounds, min_height, max_height, &[])
+        Self::from_bounds_with_vertices_iter(
+            bounds,
+            min_height,
+            max_height,
+            std::iter::empty::<[f64; 3]>(),
+        )
     }
 
-    /// Like `from_bounds`, but uses the supplied mesh vertices (geodetic
-    /// `(lon, lat, height)`) to compute a tighter horizon occlusion point via
-    /// the Cesium `EllipsoidalOccluder` algorithm.
-    pub fn from_bounds_with_vertices(
+    /// Like [`from_bounds`](Self::from_bounds), but uses the supplied mesh
+    /// vertices (geodetic `[lon, lat, height]`) to compute a tighter horizon
+    /// occlusion point via the Cesium `EllipsoidalOccluder` algorithm.
+    ///
+    /// Accepts any `IntoIterator<Item = [f64; 3]>`, so callers can stream
+    /// directly from a flat `&[f32]` buffer or any other source without
+    /// allocating an intermediate `Vec`. To feed an `f32` mesh, adapt with
+    /// `chunks_exact(3).map(|c| [c[0] as f64, c[1] as f64, c[2] as f64])`.
+    ///
+    /// Internal math runs in `f64` regardless of input precision — ECEF
+    /// coordinates at Earth scale need `f64` to keep sub-metre accuracy.
+    pub fn from_bounds_with_vertices_iter<I>(
         bounds: &TileBounds,
         min_height: f32,
         max_height: f32,
-        vertices_geodetic: &[(f64, f64, f64)],
-    ) -> Self {
+        vertices_geodetic: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = [f64; 3]>,
+    {
         let center_lon = bounds.center_lon();
         let center_lat = bounds.center_lat();
         let center_height = (min_height as f64 + max_height as f64) / 2.0;
@@ -83,6 +100,30 @@ impl QuantizedMeshHeader {
             bounding_sphere_radius,
             horizon_occlusion_point,
         }
+    }
+
+    /// Slice-based wrapper around
+    /// [`from_bounds_with_vertices_iter`](Self::from_bounds_with_vertices_iter).
+    ///
+    /// Retained for backward compatibility; prefer the iterator form when
+    /// your vertex data is in a layout (`Vec<f32>`, GPU buffer, ...) that
+    /// would otherwise require allocating an intermediate `Vec<(f64, f64, f64)>`.
+    #[deprecated(
+        since = "0.2.1",
+        note = "Use `from_bounds_with_vertices_iter` to avoid allocating an intermediate `Vec<(f64, f64, f64)>`"
+    )]
+    pub fn from_bounds_with_vertices(
+        bounds: &TileBounds,
+        min_height: f32,
+        max_height: f32,
+        vertices_geodetic: &[(f64, f64, f64)],
+    ) -> Self {
+        Self::from_bounds_with_vertices_iter(
+            bounds,
+            min_height,
+            max_height,
+            vertices_geodetic.iter().map(|&(a, b, c)| [a, b, c]),
+        )
     }
 
     /// Serialize header to bytes (88 bytes, little-endian).
@@ -232,13 +273,16 @@ fn compute_bounding_sphere(
 /// orthogonal (or beyond) the direction (e.g. a level-0 hemisphere), the
 /// magnitude diverges — matching Cesium World Terrain's huge level-0
 /// occlusion points and ensuring those tiles are never falsely culled.
-fn compute_horizon_occlusion_point(
+fn compute_horizon_occlusion_point<I>(
     bounding_sphere_center: &[f64; 3],
     bounds: &TileBounds,
     min_height: f64,
     max_height: f64,
-    vertices_geodetic: &[(f64, f64, f64)],
-) -> [f64; 3] {
+    vertices_geodetic: I,
+) -> [f64; 3]
+where
+    I: IntoIterator<Item = [f64; 3]>,
+{
     let scaled_center = ecef_to_ellipsoid_scaled(bounding_sphere_center);
     let dir_mag = vec3_magnitude(&scaled_center);
     if dir_mag < 1e-10 {
@@ -261,7 +305,8 @@ fn compute_horizon_occlusion_point(
         }
     };
 
-    if vertices_geodetic.is_empty() {
+    let mut iter = vertices_geodetic.into_iter().peekable();
+    if iter.peek().is_none() {
         let avg_h = (min_height + max_height) / 2.0;
         let cx = bounds.center_lon();
         let cy = bounds.center_lat();
@@ -277,7 +322,7 @@ fn compute_horizon_occlusion_point(
         update(geodetic_to_ecef(cx, bounds.north, avg_h));
         update(geodetic_to_ecef(cx, cy, max_height));
     } else {
-        for &(lon, lat, h) in vertices_geodetic {
+        for [lon, lat, h] in iter {
             update(geodetic_to_ecef(lon, lat, h));
         }
     }
@@ -338,6 +383,65 @@ fn compute_occlusion_magnitude(position: &[f64; 3], direction: &[f64; 3]) -> Opt
 mod tests {
     use super::*;
     use crate::coords::WGS84_SEMI_MINOR_AXIS;
+
+    /// Both APIs must agree bit-for-bit. The iter form is the canonical
+    /// implementation now; the slice form is just a thin adapter.
+    #[test]
+    #[allow(deprecated)]
+    fn from_bounds_with_vertices_iter_matches_slice_form() {
+        let bounds = TileBounds::new(-1.0, -1.0, 1.0, 1.0);
+        let verts_tuples = vec![
+            (-0.5_f64, -0.5, 10.0),
+            (0.5, -0.5, 20.0),
+            (-0.5, 0.5, 30.0),
+            (0.5, 0.5, 40.0),
+        ];
+        let from_slice =
+            QuantizedMeshHeader::from_bounds_with_vertices(&bounds, 0.0, 100.0, &verts_tuples);
+
+        // Streaming form — no intermediate Vec.
+        let iter = verts_tuples.iter().map(|&(a, b, c)| [a, b, c]);
+        let from_iter =
+            QuantizedMeshHeader::from_bounds_with_vertices_iter(&bounds, 0.0, 100.0, iter);
+
+        assert_eq!(
+            from_slice.horizon_occlusion_point,
+            from_iter.horizon_occlusion_point
+        );
+        assert_eq!(
+            from_slice.bounding_sphere_center,
+            from_iter.bounding_sphere_center
+        );
+        assert_eq!(
+            from_slice.bounding_sphere_radius,
+            from_iter.bounding_sphere_radius
+        );
+    }
+
+    /// Mimics a martini-style flat `Vec<f32>` (already mapped to geodetic
+    /// `[lon, lat, height]`) being streamed in without any intermediate
+    /// `Vec<(f64, f64, f64)>` allocation.
+    #[test]
+    fn from_bounds_with_vertices_iter_accepts_flat_f32_stream() {
+        let bounds = TileBounds::new(-1.0, -1.0, 1.0, 1.0);
+        let flat_f32: Vec<f32> = vec![
+            -0.5, -0.5, 10.0, // vertex 0
+            0.5, -0.5, 20.0, // vertex 1
+            -0.5, 0.5, 30.0, // vertex 2
+            0.5, 0.5, 40.0, // vertex 3
+        ];
+
+        let iter = flat_f32
+            .chunks_exact(3)
+            .map(|c| [c[0] as f64, c[1] as f64, c[2] as f64]);
+
+        let header = QuantizedMeshHeader::from_bounds_with_vertices_iter(&bounds, 0.0, 100.0, iter);
+
+        // Sanity: occlusion point is non-degenerate.
+        let p = header.horizon_occlusion_point;
+        assert!(p.iter().all(|v| v.is_finite()));
+        assert!(p[0].abs() + p[1].abs() + p[2].abs() > 0.0);
+    }
 
     #[test]
     fn test_header_serialization_roundtrip() {
