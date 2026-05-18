@@ -29,9 +29,9 @@ Feature flags:
 
 | Feature | Adds |
 |---------|------|
-| `png`   | `heightmap::container::rgb_to_png` + PNG decoding in `decode_image` |
-| `webp`  | `heightmap::container::rgb_to_webp` (lossless) + WebP decoding |
-| `avif`  | `heightmap::container::rgb_to_avif` (encode-only via ravif) |
+| `png`   | `heightmap::container::rgb_to_png` (and `…_to_writer`) + PNG decoding in `decode_image` |
+| `webp`  | `heightmap::container::rgb_to_webp` (and `…_to_writer`, lossless) + WebP decoding |
+| `avif`  | `heightmap::container::rgb_to_avif` (and `…_to_writer`, encode-only via ravif) |
 
 ## What's inside
 
@@ -85,18 +85,40 @@ features to wrap them via [`heightmap::container`](https://docs.rs/terrain-codec
 A runtime-dispatched `rgb_to_container(ContainerFormat, …)` is also
 provided for when the format is picked dynamically.
 
-Each format exposes per-pixel and bulk APIs:
+Each format ships in four allocation profiles so you can pick the right
+one — per-pixel for hot loops, caller-owned buffers for tight memory
+reuse, a writer-streaming variant that pairs with the container encoders
+for a zero-intermediate-allocation DEM → PNG/WebP/AVIF pipeline, and a
+`Vec<u8>` wrapper for casual use:
 
 ```rust
-use terrain_codec::heightmap::{terrarium, mapbox, gsi};
+use terrain_codec::heightmap::{terrarium, mapbox, gsi, HeightmapView, HeightmapFormat};
 
-// Per-pixel (for streaming, hot loops, tests)
+// 1. Per-pixel (for streaming, hot loops, tests)
 let rgb_px: [u8; 3] = terrarium::encode_pixel(123.45);
 let h: f32 = terrarium::decode_pixel([0x80, 0x00, 0x00]); // 0.0
 
-// Bulk (row-major width × height buffer)
+// 2. Caller-owned buffer (no allocation)
+let mut rgb = vec![0u8; elevations.len() * 3];
+terrarium::encode_into(&elevations, &mut rgb);
+let mut elev_back = vec![0f32; elevations.len()];
+terrarium::decode_into(&rgb, &mut elev_back);
+
+// 3. Streaming to a writer (4 KiB stack buffer, no intermediate Vec)
+let mut file = std::fs::File::create("dem.png")?;
+// Encode DEM → PNG directly, no intermediate Vec:
+let mut rgb = vec![0u8; elevations.len() * 3];
+terrarium::encode_into(&elevations, &mut rgb);
+terrain_codec::heightmap::container::rgb_to_png_to_writer(&rgb, width, height, &mut file)?;
+
+// 4. Bulk Vec (convenience wrapper, allocates one Vec)
 let rgb = terrarium::encode(&elevations, width, height);
 let decoded = terrarium::decode(&rgb, width, height);
+
+// Zero-copy view: borrow encoded bytes, decode lazily
+let view = HeightmapView::new(HeightmapFormat::Terrarium, &rgb, width, height);
+let h_at = view.get(10, 5);
+for elev in view.iter() { /* ... */ }
 ```
 
 ## Why buffered normals?

@@ -191,44 +191,83 @@ pub fn rgb_to_container(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, ContainerError> {
+    let mut out = Vec::new();
+    rgb_to_container_to_writer(format, rgb, width, height, &mut out)?;
+    Ok(out)
+}
+
+/// Stream-encode raw `width × height × 3` RGB bytes into the chosen
+/// container format, writing directly to `writer` without an intermediate
+/// `Vec<u8>`. Pair with [`crate::heightmap::encode_to`] for an
+/// allocation-free DEM → image pipeline.
+pub fn rgb_to_container_to_writer<W: std::io::Write>(
+    format: ContainerFormat,
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    writer: W,
+) -> Result<(), ContainerError> {
     match format {
         ContainerFormat::Png => {
             #[cfg(feature = "png")]
             {
-                Ok(rgb_to_png(rgb, width, height)?)
+                rgb_to_png_to_writer(rgb, width, height, writer)?;
+                Ok(())
             }
             #[cfg(not(feature = "png"))]
             {
-                let _ = (rgb, width, height);
+                let _ = (rgb, width, height, writer);
                 Err(ContainerError::Unsupported(ContainerFormat::Png))
             }
         }
         ContainerFormat::Webp => {
             #[cfg(feature = "webp")]
             {
-                Ok(rgb_to_webp(rgb, width, height)?)
+                rgb_to_webp_to_writer(rgb, width, height, writer)?;
+                Ok(())
             }
             #[cfg(not(feature = "webp"))]
             {
-                let _ = (rgb, width, height);
+                let _ = (rgb, width, height, writer);
                 Err(ContainerError::Unsupported(ContainerFormat::Webp))
             }
         }
         ContainerFormat::Avif => {
             #[cfg(feature = "avif")]
             {
-                Ok(rgb_to_avif(rgb, width, height)?)
+                rgb_to_avif_to_writer(rgb, width, height, writer)?;
+                Ok(())
             }
             #[cfg(not(feature = "avif"))]
             {
-                let _ = (rgb, width, height);
+                let _ = (rgb, width, height, writer);
                 Err(ContainerError::Unsupported(ContainerFormat::Avif))
             }
         }
     }
 }
 
-/// Wrap raw `width × height × 3` RGB bytes in a PNG container.
+/// Encode raw `width × height × 3` RGB bytes as PNG directly to a writer.
+///
+/// Available behind the `png` cargo feature. Combine with
+/// [`crate::heightmap::encode_to`] to wrap a DEM tile in PNG with no
+/// intermediate `Vec<u8>`.
+///
+/// # Panics
+///
+/// Panics if `rgb.len() != (width * height * 3) as usize`.
+#[cfg(feature = "png")]
+pub fn rgb_to_png_to_writer<W: std::io::Write>(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    writer: W,
+) -> Result<(), ImageError> {
+    assert_rgb_len(rgb, width, height);
+    PngEncoder::new(writer).write_image(rgb, width, height, ExtendedColorType::Rgb8)
+}
+
+/// Wrap raw `width × height × 3` RGB bytes in a PNG container `Vec<u8>`.
 ///
 /// Available behind the `png` cargo feature.
 ///
@@ -236,38 +275,60 @@ pub fn rgb_to_container(
 ///
 /// Returns [`ImageError`] if the underlying encoder fails (very rare for
 /// valid RGB inputs — typically only OOM).
-///
-/// # Panics
-///
-/// Panics if `rgb.len() != (width * height * 3) as usize`.
 #[cfg(feature = "png")]
 pub fn rgb_to_png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
-    assert_rgb_len(rgb, width, height);
     let mut out = Vec::with_capacity(rgb.len());
-    PngEncoder::new(&mut out).write_image(rgb, width, height, ExtendedColorType::Rgb8)?;
+    rgb_to_png_to_writer(rgb, width, height, &mut out)?;
     Ok(out)
 }
 
-/// Wrap raw `width × height × 3` RGB bytes in a lossless WebP container.
+/// Encode raw `width × height × 3` RGB bytes as lossless WebP directly to a writer.
 ///
 /// Available behind the `webp` cargo feature.
-///
-/// # Errors
-///
-/// Returns [`ImageError`] on encode failure.
 ///
 /// # Panics
 ///
 /// Panics if `rgb.len() != (width * height * 3) as usize`.
 #[cfg(feature = "webp")]
-pub fn rgb_to_webp(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
+pub fn rgb_to_webp_to_writer<W: std::io::Write>(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    writer: W,
+) -> Result<(), ImageError> {
     assert_rgb_len(rgb, width, height);
+    WebPEncoder::new_lossless(writer).write_image(rgb, width, height, ExtendedColorType::Rgb8)
+}
+
+/// Wrap raw `width × height × 3` RGB bytes in a lossless WebP container `Vec<u8>`.
+///
+/// Available behind the `webp` cargo feature.
+#[cfg(feature = "webp")]
+pub fn rgb_to_webp(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
     let mut out = Vec::with_capacity(rgb.len() / 2);
-    WebPEncoder::new_lossless(&mut out).write_image(rgb, width, height, ExtendedColorType::Rgb8)?;
+    rgb_to_webp_to_writer(rgb, width, height, &mut out)?;
     Ok(out)
 }
 
-/// Wrap raw `width × height × 3` RGB bytes in an AVIF container.
+/// Encode raw `width × height × 3` RGB bytes as AVIF directly to a writer.
+///
+/// Available behind the `avif` cargo feature.
+///
+/// # Panics
+///
+/// Panics if `rgb.len() != (width * height * 3) as usize`.
+#[cfg(feature = "avif")]
+pub fn rgb_to_avif_to_writer<W: std::io::Write>(
+    rgb: &[u8],
+    width: u32,
+    height: u32,
+    writer: W,
+) -> Result<(), ImageError> {
+    assert_rgb_len(rgb, width, height);
+    AvifEncoder::new(writer).write_image(rgb, width, height, ExtendedColorType::Rgb8)
+}
+
+/// Wrap raw `width × height × 3` RGB bytes in an AVIF container `Vec<u8>`.
 ///
 /// Available behind the `avif` cargo feature, which pulls in the pure-Rust
 /// [`ravif`](https://docs.rs/ravif) encoder.
@@ -276,19 +337,10 @@ pub fn rgb_to_webp(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Image
 /// system `libdav1d` library. If you need to decode AVIF, enable
 /// `image/avif-native` in your own dependency declaration and provide
 /// libdav1d at link time.
-///
-/// # Errors
-///
-/// Returns [`ImageError`] on encode failure.
-///
-/// # Panics
-///
-/// Panics if `rgb.len() != (width * height * 3) as usize`.
 #[cfg(feature = "avif")]
 pub fn rgb_to_avif(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
-    assert_rgb_len(rgb, width, height);
     let mut out = Vec::with_capacity(rgb.len() / 4);
-    AvifEncoder::new(&mut out).write_image(rgb, width, height, ExtendedColorType::Rgb8)?;
+    rgb_to_avif_to_writer(rgb, width, height, &mut out)?;
     Ok(out)
 }
 

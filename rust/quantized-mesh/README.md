@@ -11,10 +11,16 @@ Encoder and decoder for [Cesium quantized-mesh-1.0](https://github.com/CesiumGS/
 
 - Full quantized-mesh-1.0 format support
 - Encoding and decoding with `io::Read`/`io::Write` support
+- **Zero-copy decoding** via [`QuantizedMeshView<'a>`] — borrows the input
+  bytes and exposes vertex/index streams as lazy iterators, with no
+  intermediate `Vec` allocations
+- **Streaming encoder** — `encode_to_with_options` writes each section
+  directly to a `Write` target via a small stack buffer, skipping the
+  intermediate `Vec<u16>` / `Vec<u32>` encoded buffers
 - Gzip compression/decompression (auto-detected)
 - Extensions support:
   - Oct-encoded vertex normals
-  - Water mask
+  - Water mask (borrowed `&[u8; 65536]` view, or owned)
   - Metadata (tile availability)
 - Coordinate transformations (geodetic to/from ECEF)
 
@@ -77,19 +83,43 @@ encoder.encode_to_with_options(file, &EncodeOptions {
 
 ### Decoding
 
+Two flavours are available — pick based on whether you need owned `Vec`s
+or are OK with lazy borrowed iterators.
+
+**Zero-copy view** (`QuantizedMeshView<'a>`): borrows the input bytes and
+lazily decodes zigzag-delta vertex streams and high-water-mark indices,
+allocating nothing for the bulk data.
+
 ```rust
-use quantized_mesh::QuantizedMeshDecoder;
+use quantized_mesh::QuantizedMeshView;
+
+let data: &[u8] = &[/* uncompressed terrain data */];
+let view = QuantizedMeshView::parse(data).unwrap();
+
+println!("vertices: {}", view.vertex_count);
+for (u, (v, h)) in view.iter_u().zip(view.iter_v().zip(view.iter_height())) {
+    // process each vertex on the fly...
+}
+for tri in view.indices.iter().collect::<Vec<_>>().chunks(3) {
+    // triangle = [a, b, c]
+}
+```
+
+**Owned mesh** (`DecodedMesh`): convenience wrapper that handles gzip
+auto-detection and materialises every section into `Vec`s.
+
+```rust
+use quantized_mesh::DecodedMesh;
 
 // Decode from byte slice (auto-detects gzip)
 let data: &[u8] = &[/* terrain data */];
-let mesh = QuantizedMeshDecoder::decode(data).unwrap();
+let mesh = DecodedMesh::decode(data).unwrap();
 
 // Or decode from a reader (e.g., file)
 use std::fs::File;
 let file = File::open("tile.terrain").unwrap();
-let mesh = QuantizedMeshDecoder::decode_from(file).unwrap();
+let mesh = DecodedMesh::decode_from(file).unwrap();
 
-// Access decoded data
 println!("Vertex count: {}", mesh.vertices.len());
 println!("Triangle count: {}", mesh.indices.len() / 3);
 println!("Height range: {} - {}", mesh.header.min_height, mesh.header.max_height);
@@ -116,7 +146,7 @@ let options = EncodeOptions {
 let data = encoder.encode_with_options(&options);
 
 // Decode and access extensions
-let mesh = QuantizedMeshDecoder::decode(&data).unwrap();
+let mesh = DecodedMesh::decode(&data).unwrap();
 if let Some(normals) = mesh.extensions.normals {
     println!("Has {} normals", normals.len());
 }

@@ -60,36 +60,91 @@ pub fn u16_to_elevation(value: u16) -> f64 {
     value as f64 / SCALE + MIN_ELEVATION
 }
 
-/// Encode a row-major `width × height` elevation grid into little-endian
-/// u16 bytes (`width * height * 2` bytes).
+/// Encode a row-major `width × height` elevation grid into a caller-owned
+/// little-endian u16 byte buffer. `out.len()` must equal `width * height * 2`.
 ///
 /// Rows are expected north → south, columns west → east (Cesium's
 /// convention).
 ///
 /// # Panics
 ///
-/// Panics if `elevations.len() < (width * height) as usize`.
-pub fn encode_heights(elevations: &[f64], width: u32, height: u32) -> Vec<u8> {
+/// Panics if `elevations.len() < (width * height) as usize` or if `out`
+/// is the wrong size.
+pub fn encode_heights_into(elevations: &[f64], width: u32, height: u32, out: &mut [u8]) {
     let expected = (width as usize) * (height as usize);
     assert!(
         elevations.len() >= expected,
         "expected at least {expected} elevations, got {}",
         elevations.len()
     );
-    let mut out = Vec::with_capacity(expected * 2);
-    for &e in &elevations[..expected] {
-        out.extend_from_slice(&elevation_to_u16(e).to_le_bytes());
+    assert_eq!(
+        out.len(),
+        expected * 2,
+        "out buffer length mismatch: expected {}, got {}",
+        expected * 2,
+        out.len()
+    );
+    for (&e, chunk) in elevations[..expected].iter().zip(out.chunks_exact_mut(2)) {
+        chunk.copy_from_slice(&elevation_to_u16(e).to_le_bytes());
     }
+}
+
+/// Stream-encode a `width × height` elevation grid as little-endian u16
+/// bytes to a writer. Uses a 4 KiB stack buffer.
+pub fn encode_heights_to<W: std::io::Write>(
+    elevations: &[f64],
+    width: u32,
+    height: u32,
+    mut writer: W,
+) -> std::io::Result<()> {
+    let expected = (width as usize) * (height as usize);
+    assert!(
+        elevations.len() >= expected,
+        "expected at least {expected} elevations, got {}",
+        elevations.len()
+    );
+    let mut buf = [0u8; 4096];
+    let mut len = 0;
+    for &e in &elevations[..expected] {
+        let bytes = elevation_to_u16(e).to_le_bytes();
+        buf[len] = bytes[0];
+        buf[len + 1] = bytes[1];
+        len += 2;
+        if len + 2 > buf.len() {
+            writer.write_all(&buf[..len])?;
+            len = 0;
+        }
+    }
+    if len > 0 {
+        writer.write_all(&buf[..len])?;
+    }
+    Ok(())
+}
+
+/// Encode a row-major elevation grid into a freshly allocated `Vec<u8>`.
+///
+/// # Panics
+///
+/// Panics if `elevations.len() < (width * height) as usize`.
+pub fn encode_heights(elevations: &[f64], width: u32, height: u32) -> Vec<u8> {
+    let expected = (width as usize) * (height as usize);
+    let mut out = vec![0u8; expected * 2];
+    encode_heights_into(elevations, width, height, &mut out);
     out
+}
+
+/// Lazily iterate decoded elevations from little-endian u16 bytes.
+/// Trailing odd bytes are ignored.
+pub fn iter_heights(data: &[u8]) -> impl Iterator<Item = f64> + '_ {
+    data.chunks_exact(2)
+        .map(|c| u16_to_elevation(u16::from_le_bytes([c[0], c[1]])))
 }
 
 /// Decode little-endian u16 bytes back to a flat elevation grid.
 ///
 /// Truncates any trailing odd byte.
 pub fn decode_heights(data: &[u8]) -> Vec<f64> {
-    data.chunks_exact(2)
-        .map(|c| u16_to_elevation(u16::from_le_bytes([c[0], c[1]])))
-        .collect()
+    iter_heights(data).collect()
 }
 
 /// Child-availability mask: one bit per quadrant indicating whether a

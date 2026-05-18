@@ -1,4 +1,8 @@
 //! Encoding functions and main encoder for quantized-mesh format.
+//!
+//! The streaming writer uses inline zigzag-delta and high-water-mark
+//! encoding with a small chunked buffer, so no intermediate `Vec<u16>` /
+//! `Vec<u32>` is allocated for the encoded streams.
 
 use std::io::{self, Write};
 
@@ -26,73 +30,6 @@ pub fn zigzag_encode(value: i32) -> u32 {
 #[inline]
 pub fn zigzag_decode(value: u32) -> i32 {
     ((value >> 1) as i32) ^ (-((value & 1) as i32))
-}
-
-/// Encode vertex coordinates using zig-zag delta encoding.
-///
-/// Each value is encoded as the zig-zag encoded difference from the previous value.
-pub fn encode_zigzag_delta(values: &[u16]) -> Vec<u16> {
-    let mut result = Vec::with_capacity(values.len());
-    let mut prev = 0i32;
-
-    for &value in values {
-        let current = value as i32;
-        let delta = current - prev;
-        result.push(zigzag_encode(delta) as u16);
-        prev = current;
-    }
-
-    result
-}
-
-/// Decode zig-zag delta encoded values.
-pub fn decode_zigzag_delta(encoded: &[u16]) -> Vec<u16> {
-    let mut result = Vec::with_capacity(encoded.len());
-    let mut value = 0i32;
-
-    for &enc in encoded {
-        let delta = zigzag_decode(enc as u32);
-        value += delta;
-        result.push(value as u16);
-    }
-
-    result
-}
-
-/// Encode indices using high-water mark encoding.
-///
-/// This encoding is efficient when indices reference recently added vertices.
-pub fn encode_high_water_mark(indices: &[u32]) -> Vec<u32> {
-    let mut result = Vec::with_capacity(indices.len());
-    let mut highest = 0u32;
-
-    for &index in indices {
-        let code = if index == highest {
-            highest += 1;
-            0
-        } else {
-            highest - index
-        };
-        result.push(code);
-    }
-
-    result
-}
-
-/// Decode high-water mark encoded indices.
-pub fn decode_high_water_mark(encoded: &[u32]) -> Vec<u32> {
-    let mut result = Vec::with_capacity(encoded.len());
-    let mut highest = 0u32;
-
-    for &code in encoded {
-        let index = highest - code;
-        if code == 0 {
-            highest += 1;
-        }
-        result.push(index);
-    }
-
-    result
 }
 
 /// Oct-encode a unit normal vector to 2 bytes.
@@ -185,13 +122,12 @@ impl QuantizedMeshEncoder {
     /// Encode to a writer with options (extensions, compression).
     pub fn encode_to_with_options<W: Write>(
         &self,
-        mut writer: W,
+        writer: W,
         options: &EncodeOptions,
     ) -> io::Result<()> {
         if options.compression_level == 0 {
-            self.encode_uncompressed_to(&mut writer, options)
+            self.encode_uncompressed_to(writer, options)
         } else {
-            // Gzip compress
             let mut encoder = GzEncoder::new(writer, Compression::new(options.compression_level));
             self.encode_uncompressed_to(&mut encoder, options)?;
             encoder.finish()?;
@@ -199,179 +135,209 @@ impl QuantizedMeshEncoder {
         }
     }
 
-    /// Encode without compression to a writer.
+    /// Encode without compression to a writer, streaming each section
+    /// directly without intermediate Vec allocations.
     fn encode_uncompressed_to<W: Write>(
         &self,
-        writer: &mut W,
+        mut writer: W,
         options: &EncodeOptions,
     ) -> io::Result<()> {
         let vertex_count = self.vertices.len();
         let use_32bit = vertex_count > 65535;
 
-        // Write header (88 bytes)
+        // Header (88 bytes).
         writer.write_all(&self.header.to_bytes())?;
-
-        // Write vertex count
+        // Vertex count.
         writer.write_all(&(vertex_count as u32).to_le_bytes())?;
 
-        // Write encoded vertex data
-        let encoded_u = encode_zigzag_delta(&self.vertices.u);
-        let encoded_v = encode_zigzag_delta(&self.vertices.v);
-        let encoded_height = encode_zigzag_delta(&self.vertices.height);
+        // Vertex u/v/height streams (zigzag-delta).
+        write_zigzag_delta_to(&mut writer, &self.vertices.u)?;
+        write_zigzag_delta_to(&mut writer, &self.vertices.v)?;
+        write_zigzag_delta_to(&mut writer, &self.vertices.height)?;
 
-        for &u in &encoded_u {
-            writer.write_all(&u.to_le_bytes())?;
-        }
-        for &v in &encoded_v {
-            writer.write_all(&v.to_le_bytes())?;
-        }
-        for &h in &encoded_height {
-            writer.write_all(&h.to_le_bytes())?;
-        }
-
-        // Calculate current position for padding
-        // header (88) + vertex_count (4) + vertices (vertex_count * 6)
+        // Pad to index alignment. After header+count+vertices the offset is:
         let current_pos = 88 + 4 + vertex_count * 6;
-
-        // Padding for index alignment
-        if use_32bit {
-            // Align to 4 bytes
-            let padding = (4 - (current_pos % 4)) % 4;
-            for _ in 0..padding {
-                writer.write_all(&[0])?;
-            }
-        } else {
-            // Align to 2 bytes
-            let padding = (2 - (current_pos % 2)) % 2;
-            for _ in 0..padding {
-                writer.write_all(&[0])?;
-            }
+        let align = if use_32bit { 4 } else { 2 };
+        let padding = (align - (current_pos % align)) % align;
+        if padding > 0 {
+            let zeros = [0u8; 4];
+            writer.write_all(&zeros[..padding])?;
         }
 
-        // Write triangle count
+        // Triangle count + high-water-mark indices.
         let triangle_count = self.indices.len() / 3;
         writer.write_all(&(triangle_count as u32).to_le_bytes())?;
+        write_high_water_mark_to(&mut writer, &self.indices, use_32bit)?;
 
-        // Write encoded indices
-        let encoded_indices = encode_high_water_mark(&self.indices);
-        if use_32bit {
-            for &idx in &encoded_indices {
-                writer.write_all(&idx.to_le_bytes())?;
-            }
-        } else {
-            for &idx in &encoded_indices {
-                writer.write_all(&(idx as u16).to_le_bytes())?;
-            }
+        // Edge index streams.
+        for edge in [
+            &self.edge_indices.west,
+            &self.edge_indices.south,
+            &self.edge_indices.east,
+            &self.edge_indices.north,
+        ] {
+            writer.write_all(&(edge.len() as u32).to_le_bytes())?;
+            write_indices_to(&mut writer, edge, use_32bit)?;
         }
 
-        // Write edge indices
-        self.write_edge_indices_to(writer, &self.edge_indices.west, use_32bit)?;
-        self.write_edge_indices_to(writer, &self.edge_indices.south, use_32bit)?;
-        self.write_edge_indices_to(writer, &self.edge_indices.east, use_32bit)?;
-        self.write_edge_indices_to(writer, &self.edge_indices.north, use_32bit)?;
-
-        // Write extensions
+        // Extensions.
         if options.include_normals
             && let Some(normals) = &options.normals
         {
-            self.write_normals_extension_to(writer, normals)?;
+            write_normals_extension_to(&mut writer, normals)?;
         }
-
         if options.include_water_mask {
             let water_mask = options.water_mask.as_ref().cloned().unwrap_or_default();
-            self.write_water_mask_extension_to(writer, &water_mask)?;
+            write_water_mask_extension_to(&mut writer, &water_mask)?;
         }
-
         if options.include_metadata
             && let Some(metadata) = &options.metadata
         {
-            self.write_metadata_extension_to(writer, metadata)?;
+            write_metadata_extension_to(&mut writer, metadata)?;
         }
 
         Ok(())
     }
+}
 
-    fn write_edge_indices_to<W: Write>(
-        &self,
-        writer: &mut W,
-        indices: &[u32],
-        use_32bit: bool,
-    ) -> io::Result<()> {
-        writer.write_all(&(indices.len() as u32).to_le_bytes())?;
-        if use_32bit {
-            for &idx in indices {
-                writer.write_all(&idx.to_le_bytes())?;
-            }
+// ---------------------------------------------------------------------------
+// Streaming write helpers
+// ---------------------------------------------------------------------------
+
+/// Buffer size for streaming writes. 4 KiB = 2048 u16s or 1024 u32s — large
+/// enough to amortise per-call `write_all` overhead.
+const WRITE_BUF: usize = 4096;
+
+fn write_zigzag_delta_to<W: Write>(writer: &mut W, values: &[u16]) -> io::Result<()> {
+    let mut buf = [0u8; WRITE_BUF];
+    let mut len = 0;
+    let mut prev = 0i32;
+    for &value in values {
+        let current = value as i32;
+        let delta = current - prev;
+        let bytes = (zigzag_encode(delta) as u16).to_le_bytes();
+        buf[len] = bytes[0];
+        buf[len + 1] = bytes[1];
+        len += 2;
+        prev = current;
+        if len + 2 > WRITE_BUF {
+            writer.write_all(&buf[..len])?;
+            len = 0;
+        }
+    }
+    if len > 0 {
+        writer.write_all(&buf[..len])?;
+    }
+    Ok(())
+}
+
+fn write_high_water_mark_to<W: Write>(
+    writer: &mut W,
+    indices: &[u32],
+    use_32bit: bool,
+) -> io::Result<()> {
+    let mut buf = [0u8; WRITE_BUF];
+    let mut len = 0;
+    let mut highest = 0u32;
+    let stride = if use_32bit { 4 } else { 2 };
+    for &index in indices {
+        let code = if index == highest {
+            highest += 1;
+            0
         } else {
-            for &idx in indices {
-                writer.write_all(&(idx as u16).to_le_bytes())?;
-            }
+            highest - index
+        };
+        if use_32bit {
+            buf[len..len + 4].copy_from_slice(&code.to_le_bytes());
+        } else {
+            buf[len..len + 2].copy_from_slice(&(code as u16).to_le_bytes());
         }
-        Ok(())
-    }
-
-    fn write_normals_extension_to<W: Write>(
-        &self,
-        writer: &mut W,
-        normals: &[[f32; 3]],
-    ) -> io::Result<()> {
-        // Extension header
-        writer.write_all(&[ExtensionId::OctEncodedVertexNormals as u8])?;
-        let length = (normals.len() * 2) as u32;
-        writer.write_all(&length.to_le_bytes())?;
-
-        // Oct-encoded normals
-        for &normal in normals {
-            let encoded = oct_encode_normal(normal);
-            writer.write_all(&encoded)?;
+        len += stride;
+        if len + stride > WRITE_BUF {
+            writer.write_all(&buf[..len])?;
+            len = 0;
         }
-        Ok(())
     }
+    if len > 0 {
+        writer.write_all(&buf[..len])?;
+    }
+    Ok(())
+}
 
-    fn write_water_mask_extension_to<W: Write>(
-        &self,
-        writer: &mut W,
-        water_mask: &WaterMask,
-    ) -> io::Result<()> {
-        writer.write_all(&[ExtensionId::WaterMask as u8])?;
-
-        match water_mask {
-            WaterMask::Uniform(value) => {
-                writer.write_all(&1u32.to_le_bytes())?;
-                writer.write_all(&[*value])?;
-            }
-            WaterMask::Grid(grid) => {
-                writer.write_all(&(256 * 256u32).to_le_bytes())?;
-                writer.write_all(grid.as_ref())?;
-            }
+fn write_indices_to<W: Write>(writer: &mut W, indices: &[u32], use_32bit: bool) -> io::Result<()> {
+    let mut buf = [0u8; WRITE_BUF];
+    let mut len = 0;
+    let stride = if use_32bit { 4 } else { 2 };
+    for &idx in indices {
+        if use_32bit {
+            buf[len..len + 4].copy_from_slice(&idx.to_le_bytes());
+        } else {
+            buf[len..len + 2].copy_from_slice(&(idx as u16).to_le_bytes());
         }
-        Ok(())
+        len += stride;
+        if len + stride > WRITE_BUF {
+            writer.write_all(&buf[..len])?;
+            len = 0;
+        }
     }
-
-    fn write_metadata_extension_to<W: Write>(
-        &self,
-        writer: &mut W,
-        metadata: &TileMetadata,
-    ) -> io::Result<()> {
-        // Serialize metadata to JSON
-        let json = serde_json::to_string(metadata)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let json_bytes = json.as_bytes();
-
-        // Extension header
-        writer.write_all(&[ExtensionId::Metadata as u8])?;
-
-        // Extension length (4 bytes for json length + actual json)
-        let extension_length = 4 + json_bytes.len() as u32;
-        writer.write_all(&extension_length.to_le_bytes())?;
-
-        // JSON length
-        writer.write_all(&(json_bytes.len() as u32).to_le_bytes())?;
-
-        // JSON data
-        writer.write_all(json_bytes)?;
-        Ok(())
+    if len > 0 {
+        writer.write_all(&buf[..len])?;
     }
+    Ok(())
+}
+
+fn write_normals_extension_to<W: Write>(writer: &mut W, normals: &[[f32; 3]]) -> io::Result<()> {
+    writer.write_all(&[ExtensionId::OctEncodedVertexNormals as u8])?;
+    writer.write_all(&((normals.len() * 2) as u32).to_le_bytes())?;
+    let mut buf = [0u8; WRITE_BUF];
+    let mut len = 0;
+    for &normal in normals {
+        let encoded = oct_encode_normal(normal);
+        buf[len] = encoded[0];
+        buf[len + 1] = encoded[1];
+        len += 2;
+        if len + 2 > WRITE_BUF {
+            writer.write_all(&buf[..len])?;
+            len = 0;
+        }
+    }
+    if len > 0 {
+        writer.write_all(&buf[..len])?;
+    }
+    Ok(())
+}
+
+fn write_water_mask_extension_to<W: Write>(
+    writer: &mut W,
+    water_mask: &WaterMask,
+) -> io::Result<()> {
+    writer.write_all(&[ExtensionId::WaterMask as u8])?;
+    match water_mask {
+        WaterMask::Uniform(value) => {
+            writer.write_all(&1u32.to_le_bytes())?;
+            writer.write_all(&[*value])?;
+        }
+        WaterMask::Grid(grid) => {
+            writer.write_all(&(256 * 256u32).to_le_bytes())?;
+            writer.write_all(grid.as_ref())?;
+        }
+    }
+    Ok(())
+}
+
+fn write_metadata_extension_to<W: Write>(
+    writer: &mut W,
+    metadata: &TileMetadata,
+) -> io::Result<()> {
+    let json = serde_json::to_string(metadata)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let json_bytes = json.as_bytes();
+    writer.write_all(&[ExtensionId::Metadata as u8])?;
+    let extension_length = 4 + json_bytes.len() as u32;
+    writer.write_all(&extension_length.to_le_bytes())?;
+    writer.write_all(&(json_bytes.len() as u32).to_le_bytes())?;
+    writer.write_all(json_bytes)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -395,43 +361,14 @@ mod tests {
     }
 
     #[test]
-    fn test_zigzag_delta_roundtrip() {
-        let values: Vec<u16> = vec![0, 100, 50, 200, 150, 32767, 0];
-        let encoded = encode_zigzag_delta(&values);
-        let decoded = decode_zigzag_delta(&encoded);
-        assert_eq!(values, decoded);
-    }
-
-    #[test]
-    fn test_high_water_mark_simple() {
-        // Sequential indices
-        let indices = vec![0, 1, 2, 3, 4, 5];
-        let encoded = encode_high_water_mark(&indices);
-        // All zeros because each index equals highest
-        assert_eq!(encoded, vec![0, 0, 0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn test_high_water_mark_roundtrip() {
-        let indices = vec![0, 1, 2, 1, 3, 2, 0, 4, 3];
-        let encoded = encode_high_water_mark(&indices);
-        let decoded = decode_high_water_mark(&encoded);
-        assert_eq!(indices, decoded);
-    }
-
-    #[test]
     fn test_oct_encode_normal() {
-        // Up vector
         let up = [0.0f32, 0.0, 1.0];
         let encoded = oct_encode_normal(up);
-        // Should be near center (127, 127)
         assert!((encoded[0] as i32 - 127).abs() < 2);
         assert!((encoded[1] as i32 - 127).abs() < 2);
 
-        // Down vector
         let down = [0.0f32, 0.0, -1.0];
         let encoded = oct_encode_normal(down);
-        // Should be at corners
         assert!(encoded[0] == 0 || encoded[0] == 255);
     }
 
@@ -452,10 +389,7 @@ mod tests {
             ..Default::default()
         });
 
-        // Should have at least header + some data
         assert!(data.len() > 88);
-
-        // First 88 bytes should be header
         let parsed_header = QuantizedMeshHeader::from_bytes(&data).unwrap();
         assert_eq!(parsed_header.min_height, 0.0);
     }
@@ -473,18 +407,12 @@ mod tests {
 
         let encoder = QuantizedMeshEncoder::new(header, vertices, indices, edge_indices);
 
-        let _uncompressed = encoder.encode_with_options(&EncodeOptions {
-            compression_level: 0,
-            ..Default::default()
-        });
-
         let compressed = encoder.encode_with_options(&EncodeOptions {
             compression_level: 6,
             ..Default::default()
         });
 
-        // Compressed should typically be smaller (or at least start with gzip magic)
-        assert_eq!(&compressed[0..2], &[0x1f, 0x8b]); // gzip magic number
+        assert_eq!(&compressed[0..2], &[0x1f, 0x8b]);
     }
 
     #[test]
@@ -511,7 +439,6 @@ mod tests {
             ..Default::default()
         });
 
-        // Should be larger with extensions
         let without_ext = encoder.encode_with_options(&EncodeOptions {
             compression_level: 0,
             ..Default::default()
@@ -521,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_to_writer() {
+    fn test_encode_to_writer_matches_encode_with_options() {
         let header = QuantizedMeshHeader::default();
         let vertices = QuantizedVertices {
             u: vec![0, 32767, 0, 32767],
@@ -533,13 +460,11 @@ mod tests {
 
         let encoder = QuantizedMeshEncoder::new(header, vertices, indices, edge_indices);
 
-        // Encode to Vec via encode_with_options
         let data_vec = encoder.encode_with_options(&EncodeOptions {
             compression_level: 0,
             ..Default::default()
         });
 
-        // Encode to writer
         let mut data_writer = Vec::new();
         encoder
             .encode_to_with_options(
@@ -551,7 +476,6 @@ mod tests {
             )
             .expect("Failed to encode to writer");
 
-        // Both should produce the same output
         assert_eq!(data_vec, data_writer);
     }
 
@@ -568,7 +492,6 @@ mod tests {
 
         let encoder = QuantizedMeshEncoder::new(header, vertices, indices, edge_indices);
 
-        // Encode to writer with compression
         let mut data_writer = Vec::new();
         encoder
             .encode_to_with_options(
@@ -580,7 +503,6 @@ mod tests {
             )
             .expect("Failed to encode to writer");
 
-        // Should be gzip compressed
         assert_eq!(&data_writer[0..2], &[0x1f, 0x8b]);
     }
 }

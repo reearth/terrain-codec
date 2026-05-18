@@ -8,44 +8,40 @@
 //! - **Cesium heightmap-1.0** ([`cesium`]): 16-bit little-endian heights
 //!   plus child-tile mask. Cesium's legacy terrain format.
 //!
-//! The [`container`] submodule (behind the `image` cargo feature) wraps
-//! the encoded RGB bytes in PNG or WebP for serving as image tiles.
+//! The [`container`] submodule (behind the `png` / `webp` / `avif` cargo
+//! features) wraps the encoded RGB bytes in PNG, WebP, or AVIF for serving
+//! as image tiles.
 //!
-//! Three formats are supported, each as a `(encode_pixel, decode_pixel,
-//! encode, decode)` quadruplet:
+//! ## API shape: allocation-free by default
 //!
-//! - [`terrarium`] — Mapzen / Tilezen / Stadia "Terrarium" encoding.
-//!   `elevation = (R * 256 + G + B / 256) - 32768`
-//! - [`mapbox`] — Mapbox "Terrain-RGB" encoding.
-//!   `elevation = -10000 + (R * 65536 + G * 256 + B) * 0.1`
-//! - [`gsi`] — Geospatial Information Authority of Japan
-//!   ([地理院](https://maps.gsi.go.jp/development/demtile.html))
-//!   signed-integer DEM PNG. `(128, 0, 0)` is the no-data sentinel
-//!   (decodes to `NaN`).
+//! Every codec ships in three flavours so callers can pick the right
+//! allocation profile:
 //!
-//! Per-pixel functions (`encode_pixel` / `decode_pixel`) convert single
-//! samples and are useful for streaming, hot loops, custom layouts, and
-//! tests. Bulk `encode` / `decode` are thin wrappers that walk row-major
-//! `width × height` buffers.
+//! | Function           | Output                | Allocation |
+//! |--------------------|-----------------------|------------|
+//! | `encode_pixel`     | `[u8; 3]`             | none       |
+//! | `encode_into`      | caller-owned `&mut [u8]` | none    |
+//! | `encode_to<W>`     | `impl Write`          | none (4 KiB stack buffer) |
+//! | `encode`           | `Vec<u8>`             | one Vec    |
+//!
+//! Decoding mirrors this: `decode_pixel`, `decode_into`, [`HeightmapView`]
+//! (zero-copy borrowed iterator), and `decode` (`Vec<f32>`).
 //!
 //! ## Unified runtime-dispatch API
 //!
-//! When the format is only known at runtime (CLI flag, request param,
-//! config file), use the [`HeightmapFormat`] enum and the top-level
-//! [`encode_pixel`], [`decode_pixel`], [`encode`], [`decode`] functions:
+//! When the format is only known at runtime, use the [`HeightmapFormat`]
+//! enum and the top-level [`encode_pixel`], [`decode_pixel`],
+//! [`encode_into`], [`decode_into`], [`encode_to`], [`encode`], [`decode`]
+//! functions:
 //!
 //! ```
 //! use terrain_codec::heightmap::{HeightmapFormat, encode_pixel};
 //! let fmt: HeightmapFormat = "terrarium".parse().unwrap();
 //! let rgb = encode_pixel(fmt, 123.45);
 //! ```
-//!
-//! The codecs operate on raw `(R, G, B)` byte triplets and produce flat
-//! row-major buffers, so they're agnostic to the container format. Wrap
-//! the encoded bytes in PNG/WebP yourself (e.g. via the `image` crate)
-//! depending on your service.
 
 use std::fmt;
+use std::io::{self, Write};
 use std::str::FromStr;
 
 pub mod cesium;
@@ -53,8 +49,7 @@ pub mod cesium;
 pub mod container;
 
 /// Identifies one of the supported RGB heightmap encodings, for
-/// runtime-dispatched encode/decode via the top-level functions
-/// ([`encode_pixel`], [`decode_pixel`], [`encode`], [`decode`]).
+/// runtime-dispatched encode/decode via the top-level functions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HeightmapFormat {
     /// Mapzen / Tilezen / Stadia "Terrarium" encoding.
@@ -66,11 +61,10 @@ pub enum HeightmapFormat {
 }
 
 impl HeightmapFormat {
-    /// All supported formats, in declaration order. Useful for iterating
-    /// in tests or building a format-picker UI.
+    /// All supported formats, in declaration order.
     pub const ALL: [HeightmapFormat; 3] = [Self::Terrarium, Self::Mapbox, Self::Gsi];
 
-    /// Canonical lowercase name (`"terrarium"` / `"mapbox"` / `"gsi"`).
+    /// Canonical lowercase name.
     pub const fn name(self) -> &'static str {
         match self {
             Self::Terrarium => "terrarium",
@@ -108,9 +102,6 @@ impl std::error::Error for ParseHeightmapFormatError {}
 impl FromStr for HeightmapFormat {
     type Err = ParseHeightmapFormatError;
 
-    /// Parses case-insensitively. Accepts `"terrarium"`, `"mapbox"` (or
-    /// the alias `"mapbox-rgb"` / `"terrain-rgb"`), and `"gsi"` (or
-    /// `"gsi-dem"`).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
             "terrarium" => Ok(Self::Terrarium),
@@ -145,33 +136,210 @@ pub fn decode_pixel(format: HeightmapFormat, rgb: [u8; 3]) -> f32 {
     }
 }
 
-/// Encode `elevations` (metres) into a flat `width × height × 3` RGB
-/// buffer using the chosen format.
+/// Encode `elevations` into a caller-owned RGB buffer.
+///
+/// `out.len()` must equal `elevations.len() * 3`. No allocation occurs.
+pub fn encode_into(format: HeightmapFormat, elevations: &[f32], out: &mut [u8]) {
+    encode_into_with(elevations, out, |e| encode_pixel(format, e))
+}
+
+/// Decode RGB bytes into a caller-owned `f32` buffer.
+///
+/// `rgb.len()` must equal `out.len() * 3`. No allocation occurs.
+pub fn decode_into(format: HeightmapFormat, rgb: &[u8], out: &mut [f32]) {
+    decode_into_with(rgb, out, |px| decode_pixel(format, px))
+}
+
+/// Encode `elevations` into RGB bytes streamed to a writer.
+///
+/// Uses a 4 KiB stack-allocated chunk to amortise per-call write overhead.
+pub fn encode_to<W: Write>(
+    format: HeightmapFormat,
+    elevations: &[f32],
+    writer: W,
+) -> io::Result<()> {
+    encode_to_with(elevations, writer, |e| encode_pixel(format, e))
+}
+
+/// Encode `elevations` into a freshly allocated RGB `Vec`.
 ///
 /// # Panics
 ///
 /// Panics if `elevations.len() != (width * height) as usize`.
 pub fn encode(format: HeightmapFormat, elevations: &[f32], width: u32, height: u32) -> Vec<u8> {
-    match format {
-        HeightmapFormat::Terrarium => terrarium::encode(elevations, width, height),
-        HeightmapFormat::Mapbox => mapbox::encode(elevations, width, height),
-        HeightmapFormat::Gsi => gsi::encode(elevations, width, height),
-    }
+    let expected = (width as usize) * (height as usize);
+    assert_eq!(
+        elevations.len(),
+        expected,
+        "elevations length mismatch: expected {expected}, got {}",
+        elevations.len()
+    );
+    let mut out = vec![0u8; expected * 3];
+    encode_into(format, elevations, &mut out);
+    out
 }
 
-/// Decode a flat `width × height × 3` RGB buffer back to elevations
-/// using the chosen format.
+/// Decode a flat `width × height × 3` RGB buffer back to elevations.
 ///
 /// # Panics
 ///
 /// Panics if `rgb.len() != (width * height * 3) as usize`.
 pub fn decode(format: HeightmapFormat, rgb: &[u8], width: u32, height: u32) -> Vec<f32> {
-    match format {
-        HeightmapFormat::Terrarium => terrarium::decode(rgb, width, height),
-        HeightmapFormat::Mapbox => mapbox::decode(rgb, width, height),
-        HeightmapFormat::Gsi => gsi::decode(rgb, width, height),
+    let pixels = (width as usize) * (height as usize);
+    assert_eq!(
+        rgb.len(),
+        pixels * 3,
+        "rgb length mismatch: expected {}, got {}",
+        pixels * 3,
+        rgb.len()
+    );
+    let mut out = vec![0f32; pixels];
+    decode_into(format, rgb, &mut out);
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Zero-copy decode view
+// ---------------------------------------------------------------------------
+
+/// Zero-copy borrowed view over an encoded RGB heightmap.
+///
+/// Holds a `&[u8]` referencing the source bytes and lazily yields decoded
+/// elevations via [`Self::iter`] / [`Self::get`] — no `Vec<f32>` is
+/// materialised unless the caller explicitly asks via [`Self::to_vec`] or
+/// [`Self::decode_into`].
+#[derive(Debug, Clone, Copy)]
+pub struct HeightmapView<'a> {
+    /// Format used to interpret the bytes.
+    pub format: HeightmapFormat,
+    /// Raw RGB bytes (`width * height * 3` bytes, row-major).
+    pub rgb: &'a [u8],
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+}
+
+impl<'a> HeightmapView<'a> {
+    /// Wrap an RGB buffer. Asserts `rgb.len() == width * height * 3`.
+    pub fn new(format: HeightmapFormat, rgb: &'a [u8], width: u32, height: u32) -> Self {
+        let pixels = (width as usize) * (height as usize);
+        assert_eq!(
+            rgb.len(),
+            pixels * 3,
+            "rgb length mismatch: expected {}, got {}",
+            pixels * 3,
+            rgb.len()
+        );
+        Self {
+            format,
+            rgb,
+            width,
+            height,
+        }
+    }
+
+    /// Number of pixels.
+    #[inline]
+    pub fn len(&self) -> usize {
+        (self.width as usize) * (self.height as usize)
+    }
+
+    /// `true` if the view has zero pixels.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.rgb.is_empty()
+    }
+
+    /// Sample the elevation at `(x, y)` in pixels.
+    #[inline]
+    pub fn get(&self, x: u32, y: u32) -> f32 {
+        let i = (y as usize) * (self.width as usize) + (x as usize);
+        let o = i * 3;
+        decode_pixel(self.format, [self.rgb[o], self.rgb[o + 1], self.rgb[o + 2]])
+    }
+
+    /// Iterator over decoded elevations in row-major order.
+    pub fn iter(&self) -> impl Iterator<Item = f32> + '_ {
+        let fmt = self.format;
+        self.rgb
+            .chunks_exact(3)
+            .map(move |c| decode_pixel(fmt, [c[0], c[1], c[2]]))
+    }
+
+    /// Decode the entire view into a caller-owned buffer.
+    pub fn decode_into(&self, out: &mut [f32]) {
+        decode_into(self.format, self.rgb, out);
+    }
+
+    /// Decode into a freshly allocated `Vec<f32>`.
+    pub fn to_vec(&self) -> Vec<f32> {
+        let mut out = vec![0f32; self.len()];
+        self.decode_into(&mut out);
+        out
     }
 }
+
+// ---------------------------------------------------------------------------
+// Generic helpers shared by per-format modules
+// ---------------------------------------------------------------------------
+
+#[inline]
+fn encode_into_with(elevations: &[f32], out: &mut [u8], encode_pixel: impl Fn(f32) -> [u8; 3]) {
+    assert_eq!(
+        out.len(),
+        elevations.len() * 3,
+        "rgb buffer length mismatch: expected {}, got {}",
+        elevations.len() * 3,
+        out.len()
+    );
+    for (&e, chunk) in elevations.iter().zip(out.chunks_exact_mut(3)) {
+        chunk.copy_from_slice(&encode_pixel(e));
+    }
+}
+
+#[inline]
+fn decode_into_with(rgb: &[u8], out: &mut [f32], decode_pixel: impl Fn([u8; 3]) -> f32) {
+    assert_eq!(
+        rgb.len(),
+        out.len() * 3,
+        "rgb buffer length mismatch: expected {}, got {}",
+        out.len() * 3,
+        rgb.len()
+    );
+    for (chunk, dst) in rgb.chunks_exact(3).zip(out.iter_mut()) {
+        *dst = decode_pixel([chunk[0], chunk[1], chunk[2]]);
+    }
+}
+
+#[inline]
+fn encode_to_with<W: Write>(
+    elevations: &[f32],
+    mut writer: W,
+    encode_pixel: impl Fn(f32) -> [u8; 3],
+) -> io::Result<()> {
+    let mut buf = [0u8; 4095]; // multiple of 3
+    let mut len = 0;
+    for &e in elevations {
+        let px = encode_pixel(e);
+        buf[len] = px[0];
+        buf[len + 1] = px[1];
+        buf[len + 2] = px[2];
+        len += 3;
+        if len + 3 > buf.len() {
+            writer.write_all(&buf[..len])?;
+            len = 0;
+        }
+    }
+    if len > 0 {
+        writer.write_all(&buf[..len])?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-format modules
+// ---------------------------------------------------------------------------
 
 /// Mapzen / Tilezen / Stadia "Terrarium" elevation tile encoding.
 ///
@@ -179,11 +347,12 @@ pub fn decode(format: HeightmapFormat, rgb: &[u8], width: u32, height: u32) -> V
 ///
 /// Reference: <https://github.com/tilezen/joerd/blob/master/docs/formats.md#terrarium>
 pub mod terrarium {
+    use std::io::{self, Write};
+
     /// Encode a single elevation sample (metres) into Terrarium `(R, G, B)`.
     ///
     /// Values are clamped to the representable range
-    /// `[-32768, 8388.99…]` metres. `NaN` encodes as zero metres
-    /// (mid-range — Terrarium has no dedicated no-data sentinel).
+    /// `[-32768, 8388.99…]` metres. `NaN` encodes as zero metres.
     #[inline]
     pub fn encode_pixel(elevation: f32) -> [u8; 3] {
         let v = if elevation.is_nan() {
@@ -208,46 +377,37 @@ pub mod terrarium {
         r * 256.0 + g + b / 256.0 - 32768.0
     }
 
-    /// Encode `elevations` (metres) into a flat `width × height × 3` RGB buffer.
-    ///
-    /// Walks `elevations` in row-major order and delegates to
-    /// [`encode_pixel`] for each sample.
+    /// Encode `elevations` into a caller-owned RGB buffer (no allocation).
+    pub fn encode_into(elevations: &[f32], out: &mut [u8]) {
+        super::encode_into_with(elevations, out, encode_pixel);
+    }
+
+    /// Decode RGB bytes into a caller-owned `f32` buffer (no allocation).
+    pub fn decode_into(rgb: &[u8], out: &mut [f32]) {
+        super::decode_into_with(rgb, out, decode_pixel);
+    }
+
+    /// Stream-encode `elevations` to a writer.
+    pub fn encode_to<W: Write>(elevations: &[f32], writer: W) -> io::Result<()> {
+        super::encode_to_with(elevations, writer, encode_pixel)
+    }
+
+    /// Encode `elevations` into a freshly allocated `Vec<u8>`.
     ///
     /// # Panics
     ///
     /// Panics if `elevations.len() != (width * height) as usize`.
     pub fn encode(elevations: &[f32], width: u32, height: u32) -> Vec<u8> {
-        let expected = (width as usize) * (height as usize);
-        assert_eq!(
-            elevations.len(),
-            expected,
-            "elevations length mismatch: expected {expected}, got {}",
-            elevations.len()
-        );
-        let mut out = Vec::with_capacity(expected * 3);
-        for &e in elevations {
-            out.extend_from_slice(&encode_pixel(e));
-        }
-        out
+        super::encode(super::HeightmapFormat::Terrarium, elevations, width, height)
     }
 
-    /// Decode a flat `width × height × 3` RGB buffer back to elevations.
+    /// Decode RGB bytes into a freshly allocated `Vec<f32>`.
     ///
     /// # Panics
     ///
     /// Panics if `rgb.len() != (width * height * 3) as usize`.
     pub fn decode(rgb: &[u8], width: u32, height: u32) -> Vec<f32> {
-        let pixels = (width as usize) * (height as usize);
-        assert_eq!(
-            rgb.len(),
-            pixels * 3,
-            "rgb length mismatch: expected {}, got {}",
-            pixels * 3,
-            rgb.len()
-        );
-        rgb.chunks_exact(3)
-            .map(|c| decode_pixel([c[0], c[1], c[2]]))
-            .collect()
+        super::decode(super::HeightmapFormat::Terrarium, rgb, width, height)
     }
 }
 
@@ -257,11 +417,9 @@ pub mod terrarium {
 ///
 /// Reference: <https://docs.mapbox.com/data/tilesets/reference/mapbox-terrain-rgb-v1/>
 pub mod mapbox {
+    use std::io::{self, Write};
+
     /// Encode a single elevation sample (metres) into Mapbox `(R, G, B)`.
-    ///
-    /// Values are clamped to the representable range
-    /// `[-10000, +1667721.5]` metres. `NaN` encodes as zero metres
-    /// (Mapbox Terrain-RGB has no dedicated no-data sentinel).
     #[inline]
     pub fn encode_pixel(elevation: f32) -> [u8; 3] {
         let v = if elevation.is_nan() {
@@ -277,8 +435,7 @@ pub mod mapbox {
         ]
     }
 
-    /// Decode a single Mapbox Terrain-RGB `(R, G, B)` pixel into elevation
-    /// (metres).
+    /// Decode a single Mapbox Terrain-RGB `(R, G, B)` pixel into elevation (metres).
     #[inline]
     pub fn decode_pixel(rgb: [u8; 3]) -> f32 {
         let r = rgb[0] as f32;
@@ -287,74 +444,50 @@ pub mod mapbox {
         -10000.0 + (r * 65536.0 + g * 256.0 + b) * 0.1
     }
 
-    /// Encode `elevations` (metres) into a flat `width × height × 3` RGB buffer.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `elevations.len() != (width * height) as usize`.
-    pub fn encode(elevations: &[f32], width: u32, height: u32) -> Vec<u8> {
-        let expected = (width as usize) * (height as usize);
-        assert_eq!(
-            elevations.len(),
-            expected,
-            "elevations length mismatch: expected {expected}, got {}",
-            elevations.len()
-        );
-        let mut out = Vec::with_capacity(expected * 3);
-        for &e in elevations {
-            out.extend_from_slice(&encode_pixel(e));
-        }
-        out
+    /// Encode `elevations` into a caller-owned RGB buffer (no allocation).
+    pub fn encode_into(elevations: &[f32], out: &mut [u8]) {
+        super::encode_into_with(elevations, out, encode_pixel);
     }
 
-    /// Decode a flat `width × height × 3` RGB buffer back to elevations.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `rgb.len() != (width * height * 3) as usize`.
+    /// Decode RGB bytes into a caller-owned `f32` buffer (no allocation).
+    pub fn decode_into(rgb: &[u8], out: &mut [f32]) {
+        super::decode_into_with(rgb, out, decode_pixel);
+    }
+
+    /// Stream-encode `elevations` to a writer.
+    pub fn encode_to<W: Write>(elevations: &[f32], writer: W) -> io::Result<()> {
+        super::encode_to_with(elevations, writer, encode_pixel)
+    }
+
+    /// Encode `elevations` into a freshly allocated `Vec<u8>`.
+    pub fn encode(elevations: &[f32], width: u32, height: u32) -> Vec<u8> {
+        super::encode(super::HeightmapFormat::Mapbox, elevations, width, height)
+    }
+
+    /// Decode RGB bytes into a freshly allocated `Vec<f32>`.
     pub fn decode(rgb: &[u8], width: u32, height: u32) -> Vec<f32> {
-        let pixels = (width as usize) * (height as usize);
-        assert_eq!(
-            rgb.len(),
-            pixels * 3,
-            "rgb length mismatch: expected {}, got {}",
-            pixels * 3,
-            rgb.len()
-        );
-        rgb.chunks_exact(3)
-            .map(|c| decode_pixel([c[0], c[1], c[2]]))
-            .collect()
+        super::decode(super::HeightmapFormat::Mapbox, rgb, width, height)
     }
 }
 
 /// Geospatial Information Authority of Japan (GSI / 国土地理院) DEM tile
 /// encoding.
 ///
-/// Each pixel packs a signed 24-bit integer of 0.01 m units:
-///
-/// ```text
-/// x = (R << 16) | (G << 8) | B
-/// if x == 0x800000  → NaN (no-data sentinel = RGB(128, 0, 0))
-/// if x >= 0x800000  → elevation = (x - 0x1000000) * 0.01
-/// else              → elevation = x * 0.01
-/// ```
+/// Each pixel packs a signed 24-bit integer of 0.01 m units.
+/// The no-data sentinel `(128, 0, 0)` decodes to `NaN`.
 ///
 /// Reference: <https://maps.gsi.go.jp/development/demtile.html>
 pub mod gsi {
+    use std::io::{self, Write};
+
     /// No-data sentinel `(R=128, G=0, B=0)`, decoded as `NaN`.
     pub const SENTINEL_RGB: [u8; 3] = [0x80, 0x00, 0x00];
-    /// 2^23 — boundary between positive and negative values in the 24-bit
-    /// two's complement representation. Also the bit pattern of the
-    /// no-data sentinel.
     const SIGN_BIT: u32 = 1 << 23;
-    /// 2^24 — modulus used to wrap into negative values.
     const RANGE: i64 = 1 << 24;
 
     /// Encode a single elevation sample (metres) into GSI `(R, G, B)`.
     ///
-    /// `NaN` encodes as the no-data sentinel `(128, 0, 0)`. Finite values
-    /// are quantised to 0.01 m and stored as a 24-bit signed integer,
-    /// wrapping out-of-range values modulo 2²⁴ (matching the GSI spec).
+    /// `NaN` encodes as the no-data sentinel `(128, 0, 0)`.
     #[inline]
     pub fn encode_pixel(elevation: f32) -> [u8; 3] {
         if elevation.is_nan() {
@@ -370,8 +503,6 @@ pub mod gsi {
     }
 
     /// Decode a single GSI `(R, G, B)` pixel into elevation (metres).
-    ///
-    /// The no-data sentinel `(128, 0, 0)` decodes to `NaN`.
     #[inline]
     pub fn decode_pixel(rgb: [u8; 3]) -> f32 {
         let r = rgb[0] as u32;
@@ -387,45 +518,29 @@ pub mod gsi {
         }
     }
 
-    /// Encode `elevations` (metres) into a flat `width × height × 3` RGB buffer.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `elevations.len() != (width * height) as usize`.
-    pub fn encode(elevations: &[f32], width: u32, height: u32) -> Vec<u8> {
-        let expected = (width as usize) * (height as usize);
-        assert_eq!(
-            elevations.len(),
-            expected,
-            "elevations length mismatch: expected {expected}, got {}",
-            elevations.len()
-        );
-        let mut out = Vec::with_capacity(expected * 3);
-        for &e in elevations {
-            out.extend_from_slice(&encode_pixel(e));
-        }
-        out
+    /// Encode `elevations` into a caller-owned RGB buffer (no allocation).
+    pub fn encode_into(elevations: &[f32], out: &mut [u8]) {
+        super::encode_into_with(elevations, out, encode_pixel);
     }
 
-    /// Decode a flat `width × height × 3` RGB buffer back to elevations.
-    ///
-    /// The no-data sentinel `(128, 0, 0)` decodes to `NaN`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `rgb.len() != (width * height * 3) as usize`.
+    /// Decode RGB bytes into a caller-owned `f32` buffer (no allocation).
+    pub fn decode_into(rgb: &[u8], out: &mut [f32]) {
+        super::decode_into_with(rgb, out, decode_pixel);
+    }
+
+    /// Stream-encode `elevations` to a writer.
+    pub fn encode_to<W: Write>(elevations: &[f32], writer: W) -> io::Result<()> {
+        super::encode_to_with(elevations, writer, encode_pixel)
+    }
+
+    /// Encode `elevations` into a freshly allocated `Vec<u8>`.
+    pub fn encode(elevations: &[f32], width: u32, height: u32) -> Vec<u8> {
+        super::encode(super::HeightmapFormat::Gsi, elevations, width, height)
+    }
+
+    /// Decode RGB bytes into a freshly allocated `Vec<f32>`.
     pub fn decode(rgb: &[u8], width: u32, height: u32) -> Vec<f32> {
-        let pixels = (width as usize) * (height as usize);
-        assert_eq!(
-            rgb.len(),
-            pixels * 3,
-            "rgb length mismatch: expected {}, got {}",
-            pixels * 3,
-            rgb.len()
-        );
-        rgb.chunks_exact(3)
-            .map(|c| decode_pixel([c[0], c[1], c[2]]))
-            .collect()
+        super::decode(super::HeightmapFormat::Gsi, rgb, width, height)
     }
 }
 
@@ -447,7 +562,6 @@ mod tests {
 
     #[test]
     fn terrarium_zero_sea_level_is_8000() {
-        // (R, G, B) = (128, 0, 0) ↔ elevation 0 m (sea level)
         assert_eq!(terrarium::encode_pixel(0.0), [0x80, 0x00, 0x00]);
     }
 
@@ -523,7 +637,6 @@ mod tests {
     fn dispatch_matches_per_module_for_every_format() {
         let elevations: Vec<f32> = vec![-100.0, 0.0, 100.0, 1234.5, -500.0];
         for fmt in HeightmapFormat::ALL {
-            // Bulk via dispatch == bulk via the module directly.
             let dispatched = encode(fmt, &elevations, elevations.len() as u32, 1);
             let direct = match fmt {
                 HeightmapFormat::Terrarium => terrarium::encode(&elevations, 5, 1),
@@ -532,11 +645,9 @@ mod tests {
             };
             assert_eq!(dispatched, direct, "encode mismatch for {fmt}");
 
-            // Per-pixel dispatch agrees too.
             for &e in &elevations {
                 let px = encode_pixel(fmt, e);
                 let back = decode_pixel(fmt, px);
-                // Round-trip tolerance varies per format; pick the loosest.
                 assert!((e - back).abs() <= 0.1, "[{fmt}] {e} → {px:?} → {back}");
             }
         }
@@ -551,5 +662,42 @@ mod tests {
             .flat_map(|&e| gsi::encode_pixel(e))
             .collect();
         assert_eq!(bulk, from_pixels);
+    }
+
+    #[test]
+    fn encode_into_matches_encode_vec() {
+        let elevations: Vec<f32> = (0..16).map(|i| i as f32 * 10.0).collect();
+        for fmt in HeightmapFormat::ALL {
+            let expected = encode(fmt, &elevations, 16, 1);
+            let mut buf = vec![0u8; elevations.len() * 3];
+            encode_into(fmt, &elevations, &mut buf);
+            assert_eq!(expected, buf, "encode_into mismatch for {fmt}");
+        }
+    }
+
+    #[test]
+    fn encode_to_writer_matches_encode_vec() {
+        let elevations: Vec<f32> = (0..2000).map(|i| i as f32 * 0.5).collect();
+        for fmt in HeightmapFormat::ALL {
+            let expected = encode(fmt, &elevations, elevations.len() as u32, 1);
+            let mut buf = Vec::new();
+            encode_to(fmt, &elevations, &mut buf).unwrap();
+            assert_eq!(expected, buf, "encode_to mismatch for {fmt}");
+        }
+    }
+
+    #[test]
+    fn heightmap_view_iter_matches_decode() {
+        let elevations: Vec<f32> = vec![0.0, 100.0, 200.0, -50.0];
+        for fmt in HeightmapFormat::ALL {
+            let rgb = encode(fmt, &elevations, 4, 1);
+            let view = HeightmapView::new(fmt, &rgb, 4, 1);
+            let decoded: Vec<f32> = view.iter().collect();
+            let direct = decode(fmt, &rgb, 4, 1);
+            assert_eq!(decoded, direct);
+            assert_eq!(view.get(0, 0), direct[0]);
+            assert_eq!(view.get(3, 0), direct[3]);
+            assert_eq!(view.to_vec(), direct);
+        }
     }
 }
