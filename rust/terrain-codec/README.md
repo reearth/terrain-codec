@@ -7,7 +7,7 @@
 
 Terrain processing utilities for 3D tile generation in Rust.
 
-Ties together [`martini-rs`](https://crates.io/crates/martini-rs) (RTIN
+Ties together [`martini`](https://crates.io/crates/martini) (RTIN
 mesh generation) and [`quantized-mesh`](https://crates.io/crates/quantized-mesh)
 (Cesium quantized-mesh-1.0 encode/decode), and adds higher-level utilities
 that don't fit cleanly in either — most notably **seamless vertex normals

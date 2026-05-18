@@ -27,14 +27,14 @@ This repository provides libraries for processing terrain data into formats suit
 
 ### martini
 
-[![Crates.io](https://img.shields.io/crates/v/martini-rs.svg)](https://crates.io/crates/martini-rs)
-[![Docs.rs](https://docs.rs/martini-rs/badge.svg)](https://docs.rs/martini-rs)
+[![Crates.io](https://img.shields.io/crates/v/martini.svg)](https://crates.io/crates/martini)
+[![Docs.rs](https://docs.rs/martini/badge.svg)](https://docs.rs/martini)
 
 RTIN (Right-Triangulated Irregular Network) mesh generation from heightmaps.
 Based on the [Martini algorithm](https://github.com/mapbox/martini) by Mapbox.
 
 - Source: [`rust/martini/`](./rust/martini)
-- Published on crates.io as `martini-rs` (imported as `martini`)
+- Published on crates.io as `martini`
 
 ### quantized-mesh
 

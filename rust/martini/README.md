@@ -1,7 +1,7 @@
 # martini
 
-[![Crates.io](https://img.shields.io/crates/v/martini-rs.svg)](https://crates.io/crates/martini-rs)
-[![Docs.rs](https://docs.rs/martini-rs/badge.svg)](https://docs.rs/martini-rs)
+[![Crates.io](https://img.shields.io/crates/v/martini.svg)](https://crates.io/crates/martini)
+[![Docs.rs](https://docs.rs/martini/badge.svg)](https://docs.rs/martini)
 [![Rust CI](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml/badge.svg)](https://github.com/reearth/terrain-codec/actions/workflows/rust.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
@@ -22,10 +22,8 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-martini-rs = "0.1"
+martini = "0.1"
 ```
-
-> The crate is published on crates.io as `martini-rs` but imported as `martini`.
 
 ## Usage
 

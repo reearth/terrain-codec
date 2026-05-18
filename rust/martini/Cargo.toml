@@ -1,5 +1,5 @@
 [package]
-name = "martini-rs"
+name = "martini"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,6 @@ description = "RTIN mesh generation for terrain data based on the Martini algori
 readme = "README.md"
 keywords = ["terrain", "mesh", "rtin", "martini", "heightmap"]
 categories = ["algorithms", "graphics", "science::geo"]
-
-[lib]
-name = "martini"
 
 [package.metadata.docs.rs]
 all-features = true

@@ -473,7 +473,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "martini-rs"
+name = "martini"
 version = "0.1.0"
 dependencies = [
  "approx",
@@ -906,7 +906,7 @@ name = "terrain-codec"
 version = "0.1.0"
 dependencies = [
  "image",
- "martini-rs",
+ "martini",
  "quantized-mesh",
  "serde",
  "serde_json",
