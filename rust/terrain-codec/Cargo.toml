@@ -25,7 +25,7 @@ webp = ["dep:image", "image/webp"]
 avif = ["dep:image", "image/avif"]
 
 [dependencies]
-martini = { version = "0.1", path = "../martini" }
+martini = { version = "0.2", path = "../martini" }
 quantized-mesh = { version = "0.1", path = "../quantized-mesh" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
