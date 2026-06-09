@@ -80,6 +80,15 @@ let terrain: Vec<u8> = encode_terrain(
 );
 ```
 
+DEM tiles are usually served in **web-mercator** (XYZ; Terrarium, Mapbox
+Terrain-RGB) while Cesium terrain is **geodetic TMS** (EPSG:4326). To bridge
+the two,
+[`terrain_codec::mercator::MercatorDem`](https://docs.rs/terrain-codec/latest/terrain_codec/mercator/struct.MercatorDem.html)
+stitches the covering web-mercator DEM tiles and resamples them onto the
+geodetic grid `encode_terrain` expects (and the halo grid for seam-free
+normals). Fetching the source tiles stays with the caller, so it's free of
+async/IO assumptions.
+
 ## License
 
 MIT OR Apache-2.0

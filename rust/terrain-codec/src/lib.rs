@@ -30,12 +30,19 @@
 //! See [`terrain`] for [`encode_terrain`](terrain::encode_terrain) and
 //! friends, which run martini + quantized-mesh end-to-end (mesh,
 //! quantise, header, normals, encode) in a single call.
+//!
+//! # Web-mercator → geodetic reprojection
+//!
+//! See [`mercator`] for [`MercatorDem`](mercator::MercatorDem), which
+//! resamples web-mercator (XYZ) DEM tiles — Terrarium / Mapbox Terrain-RGB
+//! and friends — onto the geodetic grid that [`terrain`] consumes.
 
 pub use martini;
 pub use quantized_mesh;
 
 pub mod heightmap;
 pub mod layer_json;
+pub mod mercator;
 pub mod normals;
 pub mod terrain;
 pub mod tile_coords;

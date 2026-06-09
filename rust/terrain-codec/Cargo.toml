@@ -24,9 +24,13 @@ webp = ["dep:image", "image/webp"]
 # libdav1d (`image/avif-native`); opt in yourself if you need it.
 avif = ["dep:image", "image/avif"]
 
-# Reads a real Terrarium elevation PNG, so it needs the `png` decode path.
+# Read real Terrarium elevation PNGs, so they need the `png` decode path.
 [[example]]
 name = "real_terrain"
+required-features = ["png"]
+
+[[example]]
+name = "reproject_terrain"
 required-features = ["png"]
 
 [dependencies]
