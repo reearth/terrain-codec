@@ -216,6 +216,7 @@ pub struct TileMetadata {
     /// Available tile ranges by zoom level offset from current tile.
     /// Level 0 is one level below current tile (children).
     /// Level 1 is two levels below (grandchildren), etc.
+    #[serde(default)]
     pub available: Vec<Vec<AvailableRange>>,
 }
 
@@ -373,5 +374,14 @@ mod tests {
         assert_eq!(bounds.height(), 180.0);
         assert_eq!(bounds.center_lon(), 0.0);
         assert_eq!(bounds.center_lat(), 0.0);
+    }
+
+    #[test]
+    fn tile_metadata_decodes_without_available() {
+        // Cesium ION's metadata extension routinely omits `available` and carries
+        // tileset-specific fields instead. Decoding must not fail on that shape.
+        let json = r#"{"geometricError":1234.5}"#;
+        let m: TileMetadata = serde_json::from_str(json).expect("lenient decode");
+        assert!(m.available.is_empty());
     }
 }
