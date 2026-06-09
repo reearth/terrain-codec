@@ -62,6 +62,24 @@ seams) and RGB heightmap codecs (Terrarium / Mapbox Terrain-RGB / GSI).
 2. **Mesh** it with `martini` → vertices, indices, UVs
 3. **Encode** with `quantized-mesh` → `.terrain` file (quantized-mesh-1.0)
 
+Steps 2–3 can be done in a single call with
+[`terrain_codec::terrain::encode_terrain`](https://docs.rs/terrain-codec/latest/terrain_codec/terrain/fn.encode_terrain.html),
+which runs martini, quantises the mesh, builds the header, computes optional
+vertex normals, and encodes — straight from an elevation grid to `.terrain`
+bytes:
+
+```rust
+use terrain_codec::quantized_mesh::TileBounds;
+use terrain_codec::terrain::{encode_terrain, TerrainOptions};
+
+let terrain: Vec<u8> = encode_terrain(
+    &elevations,  // flat row-major (north→south) f32 grid, grid_size² entries
+    grid_size,    // 2^n + 1, e.g. 65
+    &bounds,      // TileBounds in degrees
+    &TerrainOptions { max_error: 1.0, ..Default::default() },
+);
+```
+
 ## License
 
 MIT OR Apache-2.0

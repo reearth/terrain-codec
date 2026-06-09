@@ -24,6 +24,11 @@ webp = ["dep:image", "image/webp"]
 # libdav1d (`image/avif-native`); opt in yourself if you need it.
 avif = ["dep:image", "image/avif"]
 
+# Reads a real Terrarium elevation PNG, so it needs the `png` decode path.
+[[example]]
+name = "real_terrain"
+required-features = ["png"]
+
 [dependencies]
 martini = { version = "0.2", path = "../martini" }
 quantized-mesh = { version = "0.2.2", path = "../quantized-mesh" }

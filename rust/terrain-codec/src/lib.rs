@@ -24,6 +24,12 @@
 //!
 //! See [`heightmap`] for Terrarium / Mapbox Terrain-RGB / GSI 地理院標高タイル
 //! `encode` ⇄ `decode` pairs.
+//!
+//! # One-shot heightmap → `.terrain`
+//!
+//! See [`terrain`] for [`encode_terrain`](terrain::encode_terrain) and
+//! friends, which run martini + quantized-mesh end-to-end (mesh,
+//! quantise, header, normals, encode) in a single call.
 
 pub use martini;
 pub use quantized_mesh;
@@ -31,4 +37,5 @@ pub use quantized_mesh;
 pub mod heightmap;
 pub mod layer_json;
 pub mod normals;
+pub mod terrain;
 pub mod tile_coords;
