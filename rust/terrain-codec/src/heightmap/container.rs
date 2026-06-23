@@ -3,11 +3,14 @@
 //! Each container is gated on its own cargo feature so callers only pay
 //! the compile-time cost of what they actually use:
 //!
-//! | Feature | Provides            | Backend                            |
-//! |---------|---------------------|------------------------------------|
-//! | `png`   | [`rgb_to_png`]      | `image/png`                        |
-//! | `webp`  | [`rgb_to_webp`]     | `image/webp` (lossless)            |
-//! | `avif`  | [`rgb_to_avif`]     | `image/avif` (ravif, encode-only)  |
+//! | Feature | Provides                           | Backend                            |
+//! |---------|------------------------------------|------------------------------------|
+//! | `png`   | [`rgb_to_png`] / [`rgba_to_png`]   | `image/png`                        |
+//! | `webp`  | [`rgb_to_webp`] / [`rgba_to_webp`] | `image/webp` (lossless)            |
+//! | `avif`  | [`rgb_to_avif`] / [`rgba_to_avif`] | `image/avif` (ravif, encode-only)  |
+//!
+//! Each format has an `rgb_*` (3-channel, the heightmap path) and an
+//! `rgba_*` (4-channel, e.g. a packed watermask) variant.
 //!
 //! [`decode_image`] auto-detects whichever formats are compiled in. WebP
 //! encoding is **lossless** — lossy WebP would need `libwebp` which is
@@ -344,6 +347,103 @@ pub fn rgb_to_avif(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Image
     Ok(out)
 }
 
+// --- RGBA variants ---
+//
+// The DEM/heightmap path is RGB, but the same containers are handy for
+// 4-channel payloads (e.g. a watermask packed as RGBA). These mirror the
+// RGB functions exactly, differing only in `ExtendedColorType::Rgba8` and
+// the `× 4` length check.
+
+/// Encode raw `width × height × 4` RGBA bytes as PNG directly to a writer.
+///
+/// Available behind the `png` cargo feature.
+///
+/// # Panics
+///
+/// Panics if `rgba.len() != (width * height * 4) as usize`.
+#[cfg(feature = "png")]
+pub fn rgba_to_png_to_writer<W: std::io::Write>(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    writer: W,
+) -> Result<(), ImageError> {
+    assert_rgba_len(rgba, width, height);
+    PngEncoder::new(writer).write_image(rgba, width, height, ExtendedColorType::Rgba8)
+}
+
+/// Wrap raw `width × height × 4` RGBA bytes in a PNG container `Vec<u8>`.
+///
+/// Available behind the `png` cargo feature.
+///
+/// # Errors
+///
+/// Returns [`ImageError`] if the underlying encoder fails (very rare for
+/// valid RGBA inputs — typically only OOM).
+#[cfg(feature = "png")]
+pub fn rgba_to_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
+    let mut out = Vec::with_capacity(rgba.len());
+    rgba_to_png_to_writer(rgba, width, height, &mut out)?;
+    Ok(out)
+}
+
+/// Encode raw `width × height × 4` RGBA bytes as lossless WebP directly to a writer.
+///
+/// Available behind the `webp` cargo feature.
+///
+/// # Panics
+///
+/// Panics if `rgba.len() != (width * height * 4) as usize`.
+#[cfg(feature = "webp")]
+pub fn rgba_to_webp_to_writer<W: std::io::Write>(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    writer: W,
+) -> Result<(), ImageError> {
+    assert_rgba_len(rgba, width, height);
+    WebPEncoder::new_lossless(writer).write_image(rgba, width, height, ExtendedColorType::Rgba8)
+}
+
+/// Wrap raw `width × height × 4` RGBA bytes in a lossless WebP container `Vec<u8>`.
+///
+/// Available behind the `webp` cargo feature.
+#[cfg(feature = "webp")]
+pub fn rgba_to_webp(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
+    let mut out = Vec::with_capacity(rgba.len() / 2);
+    rgba_to_webp_to_writer(rgba, width, height, &mut out)?;
+    Ok(out)
+}
+
+/// Encode raw `width × height × 4` RGBA bytes as AVIF directly to a writer.
+///
+/// Available behind the `avif` cargo feature.
+///
+/// # Panics
+///
+/// Panics if `rgba.len() != (width * height * 4) as usize`.
+#[cfg(feature = "avif")]
+pub fn rgba_to_avif_to_writer<W: std::io::Write>(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    writer: W,
+) -> Result<(), ImageError> {
+    assert_rgba_len(rgba, width, height);
+    AvifEncoder::new(writer).write_image(rgba, width, height, ExtendedColorType::Rgba8)
+}
+
+/// Wrap raw `width × height × 4` RGBA bytes in an AVIF container `Vec<u8>`.
+///
+/// Available behind the `avif` cargo feature (pure-Rust [`ravif`](https://docs.rs/ravif)
+/// encoder). Encode-only — see [`rgb_to_avif`] for the decode caveat.
+#[cfg(feature = "avif")]
+pub fn rgba_to_avif(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, ImageError> {
+    let mut out = Vec::with_capacity(rgba.len() / 4);
+    rgba_to_avif_to_writer(rgba, width, height, &mut out)?;
+    Ok(out)
+}
+
 /// Decode container bytes to raw RGB. The format is auto-detected from
 /// the bytes' header.
 ///
@@ -376,6 +476,18 @@ fn assert_rgb_len(rgb: &[u8], width: u32, height: u32) {
         expected,
         "rgb length mismatch: expected {expected}, got {}",
         rgb.len()
+    );
+}
+
+#[cfg(any(feature = "png", feature = "webp", feature = "avif"))]
+#[track_caller]
+fn assert_rgba_len(rgba: &[u8], width: u32, height: u32) {
+    let expected = (width as usize) * (height as usize) * 4;
+    assert_eq!(
+        rgba.len(),
+        expected,
+        "rgba length mismatch: expected {expected}, got {}",
+        rgba.len()
     );
 }
 
@@ -484,5 +596,40 @@ mod tests {
         let decoded = decode_image(&webp).unwrap();
         assert_eq!((decoded.width, decoded.height), (8, 8));
         assert_eq!(decoded.rgb, rgb);
+    }
+
+    #[cfg(any(feature = "png", feature = "webp", feature = "avif"))]
+    fn sample_rgba(width: u32, height: u32) -> Vec<u8> {
+        (0..(width * height) as usize)
+            .flat_map(|i| [(i % 256) as u8, (i % 200) as u8, (i % 100) as u8, 255])
+            .collect()
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn rgba_png_encodes_and_decodes_dimensions() {
+        let rgba = sample_rgba(8, 8);
+        let png = rgba_to_png(&rgba, 8, 8).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        // decode_image drops alpha → 3-channel RGB at the same dimensions.
+        let decoded = decode_image(&png).unwrap();
+        assert_eq!((decoded.width, decoded.height), (8, 8));
+        assert_eq!(decoded.rgb.len(), 8 * 8 * 3);
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn rgba_webp_has_riff_webp_magic() {
+        let rgba = sample_rgba(8, 8);
+        let webp = rgba_to_webp(&rgba, 8, 8).unwrap();
+        assert_eq!(&webp[..4], b"RIFF");
+        assert_eq!(&webp[8..12], b"WEBP");
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    #[should_panic(expected = "rgba length mismatch")]
+    fn rgba_length_mismatch_panics() {
+        rgba_to_png(&[0u8; 10], 8, 8).unwrap();
     }
 }
