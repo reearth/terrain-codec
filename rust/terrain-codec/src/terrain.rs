@@ -19,6 +19,9 @@
 //!   [`QuantizedMeshHeader::from_bounds_with_vertices_iter`] for a tight
 //!   horizon-occlusion point.
 //! - Vertex normals via the [`NormalMode`] of your choice.
+//! - Folding the ellipsoid [`curvature_bulge`] into the error pyramid so
+//!   nearly-flat tiles keep enough triangles to track the globe at low zoom
+//!   (the bulge feeds error estimation only, never the emitted heights).
 //!
 //! # Grid orientation
 //!
@@ -241,6 +244,40 @@ fn assert_grid_len(len: usize, grid_size: u32) {
     );
 }
 
+/// Radial deviation (metres) of the WGS84 ellipsoid surface above the flat
+/// bilinear interpolation of the tile's four corners, evaluated at grid cell
+/// `(x, y)`. The encode functions in this module always add this to the height
+/// field that drives martini's error pyramid (never to the stored heights), so
+/// nearly-flat tiles still tessellate enough to track the globe's curvature
+/// instead of collapsing to a flat quad that cuts under the ellipsoid at low
+/// zoom. Exposed so callers can reason about / reproduce the subdivision.
+///
+/// Derivation: along one geodesic edge spanning angle `Δ`, the arc rises above
+/// its chord by `R·(cos((t−½)Δ) − cos(Δ/2))`, which for the small `Δ` of a
+/// tile is `≈ R·(Δ²/2)·t·(1−t)` — zero at the corners, peaking at the centre.
+/// Because martini's interpolation is exact for affine fields, only this
+/// non-linear `t·(1−t)` term contributes error, so it is precisely the signal
+/// that controls subdivision. Longitude and latitude separate; longitude span
+/// is scaled by `cos(lat)` for meridian convergence. The term shrinks with the
+/// square of the tile span, so it forces dense meshes at low zoom (few, large
+/// tiles) and fades to nothing at high zoom (negligible curvature per tile).
+///
+/// `x` / `y` are grid coordinates in `0..grid_size`. The result is zero on the
+/// four tile corners.
+pub fn curvature_bulge(x: u32, y: u32, grid_size: u32, bounds: &TileBounds) -> f64 {
+    // WGS84 mean radius. Sub-metre accuracy here is irrelevant — this only
+    // scales an error threshold, never an emitted height.
+    const EARTH_RADIUS_M: f64 = 6_371_008.8;
+    let n = (grid_size.saturating_sub(1)).max(1) as f64;
+    let u = x as f64 / n;
+    let v = y as f64 / n;
+    let dlon = (bounds.east - bounds.west).to_radians();
+    let dlat = (bounds.north - bounds.south).to_radians();
+    let mid_lat = ((bounds.south + bounds.north) * 0.5).to_radians();
+    let dlon_eff = dlon * mid_lat.cos();
+    0.5 * EARTH_RADIUS_M * (dlat * dlat * v * (1.0 - v) + dlon_eff * dlon_eff * u * (1.0 - u))
+}
+
 /// Run martini, quantise the mesh, build the header + extensions, and return
 /// a ready-to-encode [`QuantizedMeshEncoder`] alongside its [`EncodeOptions`].
 fn build<F>(
@@ -262,7 +299,13 @@ where
 
     let mut martini = Martini::new(grid_size);
     let max = (grid_size - 1) as f64;
-    let tile = martini.create_terrain(|x, y| get_height(x as u32, y as u32));
+    // The error pyramid always sees the ellipsoid bulge so nearly-flat tiles
+    // still subdivide enough to track the globe's curvature; the stored
+    // heights below stay the true `get_height` values (the bulge never leaks
+    // into emitted heights).
+    let tile = martini.create_terrain(|x, y| {
+        get_height(x as u32, y as u32) + curvature_bulge(x as u32, y as u32, grid_size, bounds)
+    });
 
     // Hijack the UV transform to keep martini's `(u, v)` and re-sample the
     // height at the grid vertex. Martini computes `u = x/max` and
@@ -362,26 +405,68 @@ mod tests {
     }
 
     #[test]
-    fn flat_tile_roundtrips_to_two_triangles() {
+    fn flat_high_zoom_tile_collapses_to_two_triangles() {
+        // A tiny (high-zoom) flat tile: the curvature bulge is sub-millimetre
+        // here, well under max_error, so it adds no triangles and the tile
+        // collapses to the 2 corner triangles.
         let bounds = TileBounds::new(139.0, 35.0, 139.01, 35.01);
         let bytes = encode_terrain_from_fn(
             65,
             &bounds,
             |_, _| 0.0,
             &TerrainOptions {
-                max_error: 0.0,
+                max_error: 1.0,
                 compression_level: 0,
                 ..Default::default()
             },
         );
 
         let mesh = DecodedMesh::decode(&bytes).expect("decode");
-        // Flat terrain with zero error → just the 2 corner triangles.
         assert_eq!(mesh.indices.len(), 6);
         assert_eq!(mesh.header.min_height, 0.0);
         assert_eq!(mesh.header.max_height, 0.0);
         // All four corners present, heights all quantise to 0.
         assert!(mesh.vertices.height.iter().all(|&h| h == 0));
+    }
+
+    #[test]
+    fn flat_low_zoom_tile_subdivides_for_curvature_keeping_heights_flat() {
+        // A wide (low-zoom), perfectly flat tile. Without the curvature bulge
+        // martini would collapse it to two triangles that cut under the
+        // globe; the bulge forces subdivision — but never touches the emitted
+        // heights, which stay flat at 0.
+        let bounds = TileBounds::new(0.0, 0.0, 90.0, 45.0);
+        let mesh = DecodedMesh::decode(&encode_terrain_from_fn(
+            65,
+            &bounds,
+            |_, _| 0.0,
+            &TerrainOptions {
+                max_error: 1.0,
+                compression_level: 0,
+                ..Default::default()
+            },
+        ))
+        .expect("decode");
+
+        assert!(
+            mesh.indices.len() > 6,
+            "curvature must subdivide a wide flat tile, got {} indices",
+            mesh.indices.len()
+        );
+        // The bulge only feeds the error pyramid — emitted heights stay flat.
+        assert_eq!(mesh.header.min_height, 0.0);
+        assert_eq!(mesh.header.max_height, 0.0);
+        assert!(mesh.vertices.height.iter().all(|&h| h == 0));
+    }
+
+    #[test]
+    fn curvature_bulge_zero_on_corners_and_positive_at_centre() {
+        let b = TileBounds::new(0.0, 0.0, 90.0, 45.0);
+        assert_eq!(curvature_bulge(0, 0, 65, &b), 0.0);
+        assert_eq!(curvature_bulge(64, 0, 65, &b), 0.0);
+        assert_eq!(curvature_bulge(0, 64, 65, &b), 0.0);
+        assert_eq!(curvature_bulge(64, 64, 65, &b), 0.0);
+        assert!(curvature_bulge(32, 32, 65, &b) > 0.0);
     }
 
     #[test]

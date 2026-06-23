@@ -80,6 +80,12 @@ let terrain: Vec<u8> = encode_terrain(
 );
 ```
 
+`encode_terrain` always folds the WGS84 ellipsoid "curvature bulge" into
+martini's error pyramid (never into the stored heights), so nearly-flat
+low-zoom tiles keep enough triangles to track the globe's curve instead of
+collapsing to a flat quad that cuts under it. The bulge shrinks with the
+square of the tile span, so it costs nothing at high zoom.
+
 DEM tiles are usually served in **web-mercator** (XYZ; Terrarium, Mapbox
 Terrain-RGB) while Cesium terrain is **geodetic TMS** (EPSG:4326). To bridge
 the two,
