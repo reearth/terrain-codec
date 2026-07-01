@@ -35,7 +35,7 @@ required-features = ["png"]
 
 [dependencies]
 martini = { version = "0.2", path = "../martini" }
-quantized-mesh = { version = "0.2.2", path = "../quantized-mesh" }
+quantized-mesh = { version = "0.3", path = "../quantized-mesh" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 image = { version = "0.25", optional = true, default-features = false }
