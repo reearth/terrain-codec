@@ -1,0 +1,12 @@
+# Enable WebAssembly SIMD (simd128) for wasm builds.
+#
+# This is required for *any* SIMD to be emitted for wasm — both LLVM
+# autovectorization and the explicit `wide` (f32x4 / f64x2) kernels compile
+# down to nothing without it. It is scoped to the wasm targets so native
+# builds (which already get SSE/AVX on x86 and mandatory NEON on aarch64)
+# are unaffected.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+
+[target.wasm32-wasip1]
+rustflags = ["-C", "target-feature=+simd128"]

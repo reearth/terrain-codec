@@ -1,0 +1,18 @@
+[package]
+name = "wasmbench"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+# Micro-benchmark harness for wasm: exposes `extern "C"` entry points that
+# each run a kernel `iters` times so a JS driver (node) can time them under
+# WebAssembly. Compares scalar vs explicit `wide` SIMD on wasm simd128.
+# NOT part of the library; exists only to measure.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+terrain-codec = { path = "../terrain-codec" }
+quantized-mesh = { path = "../quantized-mesh" }
+wide = "0.7"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["martini", "quantized-mesh", "terrain-codec"]
+members = ["martini", "quantized-mesh", "terrain-codec", "wasmbench"]
 resolver = "2"
 
 [workspace.package]

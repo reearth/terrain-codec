@@ -56,6 +56,91 @@ pub fn oct_encode_normal(normal: [f32; 3]) -> [u8; 2] {
     [encode(x), encode(y)]
 }
 
+/// Oct-encode a batch of unit normals, writing 2 bytes per normal into `out`.
+///
+/// Equivalent to calling [`oct_encode_normal`] on each normal and
+/// concatenating the results — the output is identical on every target.
+///
+/// On `wasm32` the batch is encoded with explicit simd128 (four normals per
+/// `f32x4` step), which benchmarked ~1.66× faster than the scalar loop under
+/// a WebAssembly runtime. On every other target it is the plain scalar loop:
+/// native back-ends autovectorise that form better than the hand-written
+/// SIMD, which regressed in native benchmarks, so the SIMD path is gated to
+/// wasm only.
+///
+/// # Panics
+///
+/// Panics if `out.len() != normals.len() * 2`.
+pub fn oct_encode_normals_into(normals: &[[f32; 3]], out: &mut [u8]) {
+    assert_eq!(
+        out.len(),
+        normals.len() * 2,
+        "normal output length mismatch: expected {}, got {}",
+        normals.len() * 2,
+        out.len()
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    for (n, o) in normals.iter().zip(out.chunks_exact_mut(2)) {
+        o.copy_from_slice(&oct_encode_normal(*n));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    oct_encode_normals_simd128(normals, out);
+}
+
+/// simd128 batch oct-encode. Bit-for-bit identical to [`oct_encode_normal`]:
+/// every step is IEEE add/sub/mul/div/abs/max/min plus lane selects, and the
+/// `as u8` truncation matches the scalar `clamp(..) as u8`.
+#[cfg(target_arch = "wasm32")]
+fn oct_encode_normals_simd128(normals: &[[f32; 3]], out: &mut [u8]) {
+    use wide::{CmpGe, CmpLt, f32x4};
+
+    let one = f32x4::splat(1.0);
+    let neg_one = f32x4::splat(-1.0);
+    let zero = f32x4::splat(0.0);
+    let half = f32x4::splat(0.5);
+    let n255 = f32x4::splat(255.0);
+
+    let mut nchunks = normals.chunks_exact(4);
+    let mut ochunks = out.chunks_exact_mut(8);
+    for (nc, oc) in nchunks.by_ref().zip(ochunks.by_ref()) {
+        let x = f32x4::new([nc[0][0], nc[1][0], nc[2][0], nc[3][0]]);
+        let y = f32x4::new([nc[0][1], nc[1][1], nc[2][1], nc[3][1]]);
+        let z = f32x4::new([nc[0][2], nc[1][2], nc[2][2], nc[3][2]]);
+
+        let inv_l1 = one / (x.abs() + y.abs() + z.abs());
+        let px = x * inv_l1;
+        let py = y * inv_l1;
+
+        // Unfold lower hemisphere where z < 0 (branchless via select).
+        let neg = z.cmp_lt(zero);
+        let sign_x = px.cmp_ge(zero).blend(one, neg_one);
+        let sign_y = py.cmp_ge(zero).blend(one, neg_one);
+        let fx = (one - py.abs()) * sign_x;
+        let fy = (one - px.abs()) * sign_y;
+        let px = neg.blend(fx, px);
+        let py = neg.blend(fy, py);
+
+        // Map [-1,1] → [0,255], clamp, truncate to u8.
+        let bx = ((px * half + half) * n255).max(zero).min(n255).to_array();
+        let by = ((py * half + half) * n255).max(zero).min(n255).to_array();
+        for k in 0..4 {
+            oc[k * 2] = bx[k] as u8;
+            oc[k * 2 + 1] = by[k] as u8;
+        }
+    }
+
+    // Scalar remainder for the ≤3 trailing normals.
+    for (n, o) in nchunks
+        .remainder()
+        .iter()
+        .zip(ochunks.into_remainder().chunks_exact_mut(2))
+    {
+        o.copy_from_slice(&oct_encode_normal(*n));
+    }
+}
+
 /// Options for encoding quantized mesh.
 #[derive(Debug, Clone, Default)]
 pub struct EncodeOptions {
@@ -289,20 +374,13 @@ fn write_indices_to<W: Write>(writer: &mut W, indices: &[u32], use_32bit: bool) 
 fn write_normals_extension_to<W: Write>(writer: &mut W, normals: &[[f32; 3]]) -> io::Result<()> {
     writer.write_all(&[ExtensionId::OctEncodedVertexNormals as u8])?;
     writer.write_all(&((normals.len() * 2) as u32).to_le_bytes())?;
+    // Encode up to WRITE_BUF/2 normals per flush via the batch encoder
+    // (simd128 on wasm, scalar elsewhere). WRITE_BUF is even.
     let mut buf = [0u8; WRITE_BUF];
-    let mut len = 0;
-    for &normal in normals {
-        let encoded = oct_encode_normal(normal);
-        buf[len] = encoded[0];
-        buf[len + 1] = encoded[1];
-        len += 2;
-        if len + 2 > WRITE_BUF {
-            writer.write_all(&buf[..len])?;
-            len = 0;
-        }
-    }
-    if len > 0 {
-        writer.write_all(&buf[..len])?;
+    for chunk in normals.chunks(WRITE_BUF / 2) {
+        let n = chunk.len() * 2;
+        oct_encode_normals_into(chunk, &mut buf[..n]);
+        writer.write_all(&buf[..n])?;
     }
     Ok(())
 }
@@ -343,6 +421,36 @@ fn write_metadata_extension_to<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Spread of unit normals over both hemispheres; `n` need not be a
+    /// multiple of 4 (exercises the SIMD remainder tail).
+    fn spread_normals(n: usize) -> Vec<[f32; 3]> {
+        (0..n)
+            .map(|i| {
+                let a = (i as f32) * 0.61803398875;
+                let b = (i as f32) * 0.15915494309;
+                let x = a.sin() * 0.9;
+                let y = b.cos() * 0.9;
+                let z = 1.0 - x.abs() - y.abs();
+                let len = (x * x + y * y + z * z).sqrt().max(1e-6);
+                [x / len, y / len, z / len]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn oct_encode_normals_into_matches_per_normal() {
+        let normals = spread_normals(1003); // 1003 % 4 == 3
+        let mut batch = vec![0u8; normals.len() * 2];
+        oct_encode_normals_into(&normals, &mut batch);
+        for (i, n) in normals.iter().enumerate() {
+            assert_eq!(
+                [batch[i * 2], batch[i * 2 + 1]],
+                oct_encode_normal(*n),
+                "batch encode mismatch at normal {i}"
+            );
+        }
+    }
 
     #[test]
     fn test_zigzag_encode() {

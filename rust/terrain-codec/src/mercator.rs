@@ -243,6 +243,41 @@ impl MercatorDem {
         bilerp(top, bot, ty) as f32
     }
 
+    /// Build a [`RowSampler`] for a fixed latitude.
+    ///
+    /// This performs all the latitude-only work of [`sample`](Self::sample)
+    /// — most importantly the web-mercator inverse `tan().asinh()` — once,
+    /// so a whole grid row of longitudes then costs only linear index math
+    /// plus a bilinear blend. The per-lon result is bit-for-bit identical to
+    /// calling `sample(lon, lat)`.
+    #[inline]
+    fn row_sampler(&self, lat: f64) -> RowSampler<'_> {
+        let n_tiles = 1u32 << self.zoom;
+        let world_px = (n_tiles * self.tile_size) as f64;
+        let lat = lat.clamp(-web_mercator::MAX_LAT, web_mercator::MAX_LAT);
+        let lat_rad = lat.to_radians();
+        let gy = (1.0 - lat_rad.tan().asinh() / PI) / 2.0 * world_px;
+
+        let w = self.width_px() as i64;
+        let h = self.height_px() as i64;
+        let ly = gy - (self.y0 * self.tile_size) as f64 - 0.5;
+        let fy = ly.floor();
+        let ty = ly - fy;
+        let fyi = fy as i64;
+        let yi0 = fyi.clamp(0, h - 1);
+        let yi1 = (fyi + 1).clamp(0, h - 1);
+
+        RowSampler {
+            elev: &self.elev,
+            w,
+            row0: yi0 * w,
+            row1: yi1 * w,
+            ty,
+            world_px,
+            x_base: (self.x0 * self.tile_size) as f64 + 0.5,
+        }
+    }
+
     /// Resample onto a geodetic `grid_size × grid_size` grid covering
     /// `bounds`, row-major north → south — ready for
     /// [`crate::terrain::encode_terrain`].
@@ -258,11 +293,14 @@ impl MercatorDem {
         let denom = (grid_size - 1) as f64;
         let mut grid = vec![0f32; gs * gs];
         for j in 0..gs {
-            // Row 0 = north.
+            // Row 0 = north. Latitude is fixed across the row, so the
+            // web-mercator inverse (`tan().asinh()`) is done once here.
             let lat = bounds.north - (j as f64 / denom) * lat_span;
-            for i in 0..gs {
+            let row = self.row_sampler(lat);
+            let out = &mut grid[j * gs..j * gs + gs];
+            for (i, cell) in out.iter_mut().enumerate() {
                 let lon = bounds.west + (i as f64 / denom) * lon_span;
-                grid[j * gs + i] = self.sample(lon, lat);
+                *cell = row.sample_lon(lon);
             }
         }
         grid
@@ -295,14 +333,58 @@ impl MercatorDem {
 
         let mut elev = Vec::with_capacity(full * full);
         for j in 0..full {
-            // j = buffer → north edge; rows increase southward.
+            // j = buffer → north edge; rows increase southward. Latitude is
+            // fixed across the row, so hoist the transcendental setup once.
             let lat = bounds.north + buf * cell_lat - (j as f64) * cell_lat;
+            let row = self.row_sampler(lat);
             for i in 0..full {
                 let lon = bounds.west - buf * cell_lon + (i as f64) * cell_lon;
-                elev.push(self.sample(lon, lat) as f64);
+                elev.push(row.sample_lon(lon) as f64);
             }
         }
         BufferedElevations::new(elev, tile_grid_size, buffer)
+    }
+}
+
+/// Latitude-fixed sampling state for one output row (see
+/// [`MercatorDem::row_sampler`]). Holds the two bracketing pixel rows and the
+/// vertical blend factor precomputed, so [`sample_lon`](Self::sample_lon)
+/// only has to resolve the longitude axis.
+struct RowSampler<'a> {
+    elev: &'a [f32],
+    w: i64,
+    /// `yi0 * w` — base offset of the north bracketing row.
+    row0: i64,
+    /// `yi1 * w` — base offset of the south bracketing row.
+    row1: i64,
+    ty: f64,
+    world_px: f64,
+    /// `x0 * tile_size + 0.5` — the half-pixel-shifted block origin.
+    x_base: f64,
+}
+
+impl RowSampler<'_> {
+    /// Sample the row at a single longitude. Equivalent to
+    /// `MercatorDem::sample(lon, lat)` for this row's latitude.
+    #[inline]
+    fn sample_lon(&self, lon: f64) -> f32 {
+        let lx = (lon + 180.0) / 360.0 * self.world_px - self.x_base;
+        let fx = lx.floor();
+        let tx = lx - fx;
+        let fxi = fx as i64;
+        let xi0 = fxi.clamp(0, self.w - 1);
+        let xi1 = (fxi + 1).clamp(0, self.w - 1);
+        let top = bilerp(
+            self.elev[(self.row0 + xi0) as usize] as f64,
+            self.elev[(self.row0 + xi1) as usize] as f64,
+            tx,
+        );
+        let bot = bilerp(
+            self.elev[(self.row1 + xi0) as usize] as f64,
+            self.elev[(self.row1 + xi1) as usize] as f64,
+            tx,
+        );
+        bilerp(top, bot, self.ty) as f32
     }
 }
 

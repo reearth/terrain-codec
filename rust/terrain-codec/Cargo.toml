@@ -39,3 +39,14 @@ quantized-mesh = { version = "0.2.2", path = "../quantized-mesh" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 image = { version = "0.25", optional = true, default-features = false }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "mercator"
+harness = false
+
+[[bench]]
+name = "heightmap"
+harness = false
