@@ -48,8 +48,8 @@ fn make_elevations(n: usize) -> Vec<f32> {
 fn make_normals(n: usize) -> Vec<[f32; 3]> {
     (0..n)
         .map(|i| {
-            let a = (i as f32) * 0.61803398875;
-            let b = (i as f32) * 0.15915494309;
+            let a = (i as f32) * 0.618_034;
+            let b = (i as f32) * 0.159_154_94;
             let x = a.sin() * 0.9;
             let y = b.cos() * 0.9;
             let z = 1.0 - x.abs() - y.abs();
